@@ -1,0 +1,47 @@
+main {
+    margin-top: 4rem;
+    margin-bottom: 5rem;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+
+    gap: 2rem;
+}
+
+.status-conainer {
+    flex-direction: column;
+}
+
+.status-element {
+    flex-direction: row;
+
+    width: min-content;
+}
+
+.status {
+    padding: 0.5rem;
+
+    height: 1rem;
+    width: 1rem;
+
+    border: solid black 1px;
+}
+
+.row-container {
+    flex-direction: row;
+    gap: 0.5rem;
+}
+
+.row-element {
+    height: 1rem;
+    padding: 0.5rem;
+
+    border: solid black 1px;
+}
+
+.row-container,
+.status-conainer,
+.status-element,
+main {
+    display: flex;
+}
