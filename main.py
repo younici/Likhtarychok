@@ -1,28 +1,37 @@
-import asyncio
-from datetime import datetime 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from pywebpush import webpush, WebPushException
 import json, os
+
+from typing import Any
 
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
-
-import untils.redis_db as redis_un
-
-from db.orm.utils import init_db, save_sub, get_all_sub
-
-from untils.parser import parse
 from dotenv import load_dotenv
 
+import untils.redis_db as redis_un
+from untils import notifier
+from untils import subcription
+from untils import cache
+from db.orm.session import AsyncSessionLocal
+import db.orm.utils as db
 
 load_dotenv()
 
-_redis_client = None
+import logging as log
 
-app = FastAPI()
+log.basicConfig(
+    level=log.DEBUG,
+    format="! [%(levelname)s] %(message)s"
+)
+
+app = FastAPI(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,19 +41,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+ISDB = True
+
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
 BASE_DIR = Path(__file__).resolve().parent
 SITE_DIR = BASE_DIR / "site"
 
+OFFLINE = os.getenv("OFFLINE", "false").lower() == "true"
 
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")
-
-subscriptions = []
-
-def get_subs():
-    return subscriptions
 
 @app.get("/vapid_public_key")
 def vapid_key():
@@ -54,8 +61,14 @@ def vapid_key():
 async def subscribe(req: Request):
     data = await req.json()
 
-    endpoint = data.get("endpoint")
-    keys = data.get("keys", {})
+    sub = data.get("subscription")
+    if not isinstance(sub, dict):
+        return {"ok": False, "msg": "Invalid subscription data"}
+
+    queue = subcription.queue_code_from_input(data.get("queue"))
+
+    endpoint = sub.get("endpoint")
+    keys = sub.get("keys", {})
     p256dh = keys.get("p256dh")
     auth = keys.get("auth")
 
@@ -64,154 +77,116 @@ async def subscribe(req: Request):
 
     sub_push = {
         "endpoint": endpoint,
-        "keys": {"p256dh": p256dh, "auth": auth}
+        "keys": {"p256dh": p256dh, "auth": auth},
+        "queue": queue,
     }
 
-    sub_db = {
-        "endpoint": endpoint,
-        "p256dh": p256dh,
-        "auth": auth
-    }
+    existing_queue, existing_idx = subcription.find_push_subscription(endpoint)
 
-    # Проверка на дубликат
-    exists = any(s.get("endpoint") == endpoint for s in subscriptions)
-    if not exists:
-        subscriptions.append(sub_push)
-        await _redis_client.rpush("subscriptions", json.dumps(sub_push))
-        await save_sub(sub_db)
-        return {"ok": True, "msg": "Ви підписались на сповіщення"}
+    if existing_idx is None:
+        subcription.remember_push_subscription(sub_push)
+        created = True
+    else:
+        subcription.forget_push_subscription(endpoint)
+        subcription.remember_push_subscription(sub_push)
+        created = False
 
-    return {"ok": True, "msg": "Ви вже підписані на сповіщення"}
+    await subcription.save_subscription_db(queue, sub_push)
+
+    await subcription.save_all_to_redis()
+
+    return {"ok": True, "msg": "Ви пiдписались на сповiщення" if created else "Данi пiдписки оновлено"}
+
+@app.post("/unsubscribe")
+async def unsubscribe(req: Request):
+    data = await req.json()
+    sub = data.get("subscription")
+
+    normalized = subcription.normalize_subscription(sub)
+    if not normalized:
+        return {"ok": False, "msg": "Invalid subscription data"}
+
+    endpoint = normalized.get("endpoint")
+    removed = subcription.forget_push_subscription(endpoint)
+
+    if ISDB:
+        try:
+            await db.delete_sub(endpoint)
+        except Exception as ex:
+            log.warning(f"delete_sub failed: {ex}")
+
+    await subcription.save_all_to_redis()
+
+    # Отменяем подписку в базе/кэше, даже если на клиенте уже нет подписи
+    return {"ok": True, "msg": "Підписку скасовано" if removed else "Підписка не знайдена"}
 
 
 @app.post("/notify")
 async def notify(req: Request):
-    body = await req.json()
+    body: dict[str, Any] = await req.json()
     message = body.get("message")
-    sent = 0
+    title = body.get("title")
 
     if NOTIFY_PASS != body.get("pass"):
         return {"msg": "incorrect password"}
 
-    for sub in subscriptions:
-        try:
-            # Если sub из Redis — приведи в нужный формат
-            if isinstance(sub, str):
-                sub = json.loads(sub)
-            # Если нет ключа keys — сформируй его вручную
-            if "keys" not in sub:
-                sub = {
-                    "endpoint": sub["endpoint"],
-                    "keys": {
-                        "p256dh": sub["p256dh"],
-                        "auth": sub["auth"]
-                    }
-                }
-
-            webpush(
-                subscription_info=sub,
-                data=json.dumps({"title": body.get("title"), "body": message}),
-                vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims={"sub": "mailto:kostantinreksa@gmail.com"},
-            )
-            sent += 1
-
-        except WebPushException as ex:
-            print(f"⚠️ Push failed for {sub.get('endpoint', '')[:40]}...: {ex}")
-
-            return {"msg": f"⚠️ Push failed for {sub.get('endpoint', '')[:40]}...: {ex}"}
-
-    return {"sent": sent}
+    return await notifier.notify_all(title=title, message=message)
 
 @app.get("/")
 def index():
     return FileResponse(SITE_DIR / "index.html")
 
+@app.get("/robots.txt")
+def robots():
+    return FileResponse(SITE_DIR / "robots.txt")
+
+@app.get("/sitemap.xml")
+def sitemap():
+    return FileResponse(SITE_DIR / "sitemap.xml")
+
+@app.get("/ads.txt")
+def ads():
+    return FileResponse(SITE_DIR / "ads.txt")
+
 @app.get("/sw.js")
 def service_worker():
     return FileResponse(SITE_DIR / "sw.js")
 
+@app.get("/count")
+def get_count():
+    all_subs = [json.dumps(sub) for sub in notifier.get_subs() if sub]
+    return len(all_subs)
+
 @app.get("/status")
-def get_status():
-    return {"Status": parse()}
+async def get_status(queue: str | None = None):
+    queue_code = subcription.queue_code_from_input(queue)
+    return {"Status": await notifier.parse_status_for_queue(queue_code)}
 
 @app.on_event("startup")
 async def start():
-    global _redis_client, subscriptions
-
-    await init_db()
-
-    _redis_client = await redis_un.init_redis()
-    subs_data = await redis_un.load_subscriptions()
-
-    if subs_data:
-        subscriptions = [json.loads(s) if isinstance(s, str) else s for s in subs_data]
-        print(f"✅ Загружено подписок: {len(subscriptions)}")
+    scheduler = AsyncIOScheduler()
+    if not OFFLINE:
+        scheduler.add_job(notifier.check_and_notify, "cron", minute="0,30")
     else:
-        subscriptions = []
-        print("ℹ️ Подписок не найдено в Redis.")
-        subscriptions = await get_all_sub()
-        if not subscriptions:
-            print("Подписки в базе данных не найдены")
-        else:
-            print(f"Количество подписок из базы данных {len(subscriptions)}")
-            await save_all_to_redis(subscriptions)
+        log.info("app started in offline mode")
+
+    scheduler.add_job(cache.cache_loop, "cron", minute="0,10")
+    scheduler.start()
+
+    log.info("scheduler started")
+
+    if not OFFLINE:
+        try:
+            await db.init_db()
+        except Exception as exc:
+            log.warning(f"init_db() failed: {exc}")
+            db.disable_db()
+            global ISDB
+            ISDB = False
+    else:
+        log.info("db disabled, offline mode")
     
-    asyncio.create_task(check_and_notify())
 
-async def save_all_to_redis(subscriptions):
-    if not subscriptions:
-        return
-
-    serialized = [json.dumps({
-        "endpoint": s.endpoint,
-        "keys": {
-            "p256dh": s.p256dh,
-            "auth": s.auth
-        }
-    }) for s in subscriptions]
-
-    await _redis_client.rpush("subscriptions", *serialized)
-    print(f"✅ Загружено подписок в Redis: {len(serialized)}")
-
-
-CHECK_INTERVAL = 60 * 15  # проверять каждые 15 минут
-
-async def check_and_notify():
-    while True:
-        try:
-            status = parse()
-            now = datetime.now()
-            # индекс текущего часа
-            current_hour = now.hour
-
-            # если через 1 час будет отключение
-            if current_hour + 1 < len(status) and status[current_hour] == 0 and status[current_hour + 1] == 1:
-                await send_push_all(
-                    title="⚠️ Скоро відключення світла",
-                    body=f"Через одну годину (в {current_hour+1}:00) планується відключення світла по графіку."
-                )
-
-        except Exception as e:
-            print(f"[error] {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
-
-async def send_push_all(title: str, body: str):
-    subscriptions = get_subs()
-
-    sent = 0
-    for sub in subscriptions:
-        try:
-            if isinstance(sub, str):
-                sub = json.loads(sub)
-            webpush(
-                subscription_info=sub,
-                data=json.dumps({"title": title, "body": body}),
-                vapid_private_key=VAPID_PRIVATE_KEY,
-                vapid_claims={"sub": "mailto:kostantinreksa@gmail.com"},
-            )
-            sent += 1
-        except Exception as ex:
-            print(f"⚠️ Push failed: {ex}")
-    print(f"✅ Отправлено уведомлений: {sent}")
+    redis_client = await redis_un.init_redis()
+    subcription.set_redis_client(redis_client)
+    await subcription.load_subscriptions_from_storage()

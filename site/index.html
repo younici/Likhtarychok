@@ -6,28 +6,107 @@
     <title>Svitlyachok</title>
 
     <link rel="stylesheet" href="/site/css/reset.css" />
-    <link rel="stylesheet" href="/site/css/common.css" />
-    <link rel="stylesheet" href="/site/css/pages/index.css?v=2" />
-    <script src="/site/scr/main.js?v=4" defer></script>
+    <link rel="stylesheet" href="/site/css/common.css?v=10" />
+    <link rel="stylesheet" href="/site/css/pages/index.css?v=17" />
+    <script src="/site/scr/main.js?v=17" defer></script>
   </head>
   <body>
     <header></header>
     <main>
-      <!-- <p>Введите свой юзернейм</p>
-      <input type="text" name="" id="username-input" /> -->
-      <p>
-        Якщо дозволите сповіщення то ми повідомимо про відключення світла за
-        годину по графіку.
-      </p>
-      <button id="subscribe">
-        Дозволити сповіщення про відключення світла
-      </button>
+      <div class="container">
+        <div class="main-elements">
+          <p>
+            Якщо дозволите сповіщення то ми повідомимо про відключення світла за
+            годину по графіку.
+          </p>
+          <div class="buttnos-div">
+            <button id="subscribe">Пiдписатись на сповіщення</button>
+            <button id="unsubscribe">Відписатись від сповіщень</button>
+          </div>
+          <p>Виберить чергу</p>
+          <select id="queueSelector" class="queue-selector">
+            <option value="11">1.1</option>
+            <option value="12">1.2</option>
+            <option value="21">2.1</option>
+            <option value="22">2.2</option>
+            <option value="31">3.1</option>
+            <option value="32">3.2</option>
+            <option value="41">4.1</option>
+            <option value="42">4.2</option>
+            <option value="51">5.1</option>
+            <option value="52">5.2</option>
+            <option value="61">6.1</option>
+            <option value="62">6.2</option>
+          </select>
 
-      <div class="row-container">
-        <div class="status-conainer"></div>
-        <div class="time-container"></div>
+          <button class="refresh-queue">Оновити iнформацiю</button>
+        </div>
+
+        <p>Переключити вигляд графіку</p>
+
+        <label class="switch">
+          <input type="checkbox" id="queueToggle" />
+          <span class="slider"></span>
+        </label>
+        <div class="row-container disp">
+          <div class="status-conainer"></div>
+          <div class="time-container">
+            <p class="row-element">00:00–01:00</p>
+            <p class="row-element">01:00–02:00</p>
+            <p class="row-element">02:00–03:00</p>
+            <p class="row-element">03:00–04:00</p>
+            <p class="row-element">04:00–05:00</p>
+            <p class="row-element">05:00–06:00</p>
+            <p class="row-element">06:00–07:00</p>
+            <p class="row-element">07:00–08:00</p>
+            <p class="row-element">08:00–09:00</p>
+            <p class="row-element">09:00–10:00</p>
+            <p class="row-element">10:00–11:00</p>
+            <p class="row-element">11:00–12:00</p>
+            <p class="row-element">12:00–13:00</p>
+            <p class="row-element">13:00–14:00</p>
+            <p class="row-element">14:00–15:00</p>
+            <p class="row-element">15:00–16:00</p>
+            <p class="row-element">16:00–17:00</p>
+            <p class="row-element">17:00–18:00</p>
+            <p class="row-element">18:00–19:00</p>
+            <p class="row-element">19:00–20:00</p>
+            <p class="row-element">20:00–21:00</p>
+            <p class="row-element">21:00–22:00</p>
+            <p class="row-element">22:00–23:00</p>
+            <p class="row-element">23:00–24:00</p>
+          </div>
+        </div>
+        <div class="outage-summary disp">
+          <p class="outage-title">Години без світла</p>
+          <div id="outageList" class="outage-list"></div>
+        </div>
+      </div>
+
+      <div class="modal-btn-container">
+        <p class="show-modal-btn-text">Інформація про сайт</p>
+      </div>
+      <button class="show-modal-btn" id="showModal">i</button>
+
+      <div class="modal-overlay hide"></div>
+
+      <div class="modal-info-container hide">
+        <div class="btn-close-container">
+          <button class="close-modal" id="closeModal">X</button>
+        </div>
+        <div class="modal-head">
+          <h2 class="modal-title">Про сайт</h2>
+        </div>
+        <div class="modal-body">
+          <h1>
+            Цей сайт створений для зручного показу графіку відключень світла по
+            Житомирьскій області
+          </h1>
+        </div>
+        <div class="modal-footer"></div>
       </div>
     </main>
+
     <footer></footer>
   </body>
 </html>

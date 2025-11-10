@@ -7,13 +7,22 @@ headers = {
     "User-Agent": "Mozilla/5.0"
 }
 
-def parse():
-    html = request(url=SITE_URL, method="GET", timeout=5, headers=headers).text
+def parse(queue: int, legacy = True):
+    if legacy:
+        queue = max(0, min(queue, 1))
+    else:
+        queue = to_index(queue)
+
+    html = request(url=SITE_URL, method="GET", timeout=15, headers=headers).text
     soup = BeautifulSoup(html, "html.parser")
-    text = soup.find_all("table")[3].select("tr")[6].select("td")[3:]
+    if legacy:
+        text = soup.find_all("table")[3].select("tr")[6+queue].select("td")[2:]
+    else:
+        text = soup.find_all("table")[3].select("tr")[2+queue].select("td")[2:]
 
     status = []
     colors = []
+
     for i in text:
         t = str(i)
         color = t.split(";")[5].split(">", maxsplit=1)[0].replace('"', "").split(sep=":", maxsplit=1)[1]
@@ -27,3 +36,8 @@ def parse():
             status.append(1)
 
     return status
+
+def to_index(n: int) -> int:
+    x = n // 10
+    y = n % 10
+    return (x - 1) * 2 + y
