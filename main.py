@@ -53,6 +53,10 @@ OFFLINE = os.getenv("OFFLINE", "false").lower() == "true"
 
 app.mount("/site", StaticFiles(directory=SITE_DIR), name="site")
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(SITE_DIR / "favicon.ico")
+
 @app.get("/vapid_public_key")
 def vapid_key():
     return {"key": VAPID_PUBLIC_KEY}
@@ -134,7 +138,9 @@ async def notify(req: Request):
 
 @app.get("/")
 def index():
-    return FileResponse(SITE_DIR / "index.html")
+    response = FileResponse(SITE_DIR / "index.html")
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 @app.get("/robots.txt")
 def robots():
@@ -152,11 +158,6 @@ def ads():
 def service_worker():
     return FileResponse(SITE_DIR / "sw.js")
 
-@app.get("/count")
-def get_count():
-    all_subs = [json.dumps(sub) for sub in notifier.get_subs() if sub]
-    return len(all_subs)
-
 @app.get("/status")
 async def get_status(queue: str | None = None):
     queue_code = subcription.queue_code_from_input(queue)
@@ -166,11 +167,11 @@ async def get_status(queue: str | None = None):
 async def start():
     scheduler = AsyncIOScheduler()
     if not OFFLINE:
-        scheduler.add_job(notifier.check_and_notify, "cron", minute="0,30")
+        scheduler.add_job(notifier.check_and_notify, "cron", minute="*/30")
     else:
         log.info("app started in offline mode")
 
-    scheduler.add_job(cache.cache_loop, "cron", minute="0,05")
+    scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
     scheduler.start()
 
     log.info("scheduler started")
