@@ -13,10 +13,14 @@ const queueToggle = document.getElementById("queueToggle");
 const outageList = document.getElementById("outageList");
 const outageSummary = document.getElementsByClassName("outage-summary")[0];
 const unsubscribeBtn = document.getElementById("unsubscribe");
+const subscribeBtn = document.getElementById("subscribe");
 const infoScrollBtn = document.getElementById("showInfo");
 const scrollTopBtn = document.getElementById("scrollTopBtn");
 const infoContainer = document.querySelector(".info-container");
 const InfoBtnContainer = document.querySelector(".btn-container");
+const modal = document.getElementById("modal");
+const hideModal = document.getElementById("hideModal");
+const selectorSiteBtn = document.getElementById("selectorSite");
 
 const lampOffSvg = '<svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor"fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6" /><path d="M10 21h4" /><path d="M8 15a6 6 0 1 1 8 0l-1 1.5H9z" /><line x1="5" y1="5" x2="19" y2="19" /></svg>';
 
@@ -34,36 +38,6 @@ const lampOffSvg = '<svg viewBox="0 0 24 24" width="24" height="24" stroke="curr
     const outputArray = new Uint8Array(rawData.length);
     for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
     return outputArray;
-  }
-
-  const button = document.getElementById("subscribe");
-  if (button) {
-    button.onclick = async () => {
-      const reg = await navigator.serviceWorker.register("/sw.js");
-      await navigator.serviceWorker.ready;
-
-      const subscription = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
-      });
-
-      const payload  = {
-        queue: queueSelector.value,
-        subscription
-      }
-
-      const answer = await fetch(`/subscribe`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const result = await answer.json();
-      const msg = result?.msg || (result?.ok ? "ok" : "err");
-      const value = queueSelector.value; 
-      const Qvalue = value[0] + "." + value[1];
-      alert(msg + " " + Qvalue);
-    };
   }
 
   if (unsubscribeBtn) {
@@ -109,6 +83,38 @@ const lampOffSvg = '<svg viewBox="0 0 24 24" width="24" height="24" stroke="curr
   }
 
   await renderTable(queueSelector.value);
+
+  selectorSiteBtn.addEventListener('click', async () => {
+    const reg = await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    const subscription = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey),
+    });
+
+    const payload  = {
+      queue: queueSelector.value,
+      subscription
+    }
+
+    const answer = await fetch(`/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const result = await answer.json();
+    const msg = result?.msg || (result?.ok ? "ok" : "err");
+    const value = queueSelector.value; 
+    const Qvalue = value[0] + "." + value[1];
+    alert(msg + " " + Qvalue);
+  });
+
+  subscribeBtn.addEventListener('click', async () => {
+    modal.classList.remove("hide");
+    hideModal.classList.remove("hide");
+  });
 
   queueSelector.addEventListener('change', async () => {
     saveSettings();

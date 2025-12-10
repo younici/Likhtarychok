@@ -3,7 +3,7 @@ from db.orm.session import engine, AsyncSessionLocal, db_available
 from sqlalchemy import select, text, inspect
 
 from db.orm.models.subscription import Subscription
-from db.orm.models.user import User
+from db.orm.models.tg_sub import TgSub
 
 import logging
 
@@ -19,12 +19,14 @@ async def init_db():
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_subscription_columns)
 
+
 def _ensure_subscription_columns(sync_conn):
     inspector = inspect(sync_conn)
     columns = {col["name"] for col in inspector.get_columns("subscriptions")}
 
-    if "user_id" not in columns:
-        sync_conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS user_id INTEGER"))
+    if "queue_id" not in columns:
+        sync_conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS queue_id INTEGER DEFAULT 0"))
+
 
 def _extract_subscription_data(data: dict):
     queue = data.get("queue", 0)
@@ -42,6 +44,7 @@ def _extract_subscription_data(data: dict):
 
     return queue, endpoint, p256dh, auth
 
+
 async def save_sub(data):
     if AsyncSessionLocal is None:
         log.warning("save_sub(): DB not available, skipping.")
@@ -55,51 +58,36 @@ async def save_sub(data):
 
     async with AsyncSessionLocal() as session:
         try:
-            stmt = (
-                select(Subscription, User)
-                .join(User, Subscription.user_id == User.id, isouter=True)
-                .where(Subscription.endpoint == endpoint)
-            )
+            stmt = select(Subscription).where(Subscription.endpoint == endpoint)
             row = await session.execute(stmt)
-            result = row.first()
+            existing = row.scalar_one_or_none()
 
-            if result:
-                existing, user = result
+            if existing:
                 existing.p256dh = p256dh
                 existing.auth = auth
-
-                if user:
-                    user.queue_id = queue
-                else:
-                    new_user = User(queue_id=queue)
-                    session.add(new_user)
-                    await session.flush()
-                    existing.user_id = new_user.id
+                existing.queue_id = queue
 
                 await session.commit()
-                return existing.user_id
-
-            user = User(queue_id=queue)
-            session.add(user)
-            await session.flush()
+                return existing.id
 
             new_sub = Subscription(
                 endpoint=endpoint,
                 p256dh=p256dh,
                 auth=auth,
-                user_id=user.id,
+                queue_id=queue,
             )
             session.add(new_sub)
             await session.commit()
 
             log.info(f"Subscription saved: {endpoint[:50]}...")
-            return new_sub.user_id
+            return new_sub.id
 
         except Exception:
             await session.rollback()
             raise
 
-async def get_all_sub():
+
+async def get_all_http_sub():
     if AsyncSessionLocal is None:
         log.warning("get_all_sub(): DB not available, returning empty list.")
         return []
@@ -110,8 +98,8 @@ async def get_all_sub():
                 Subscription.endpoint,
                 Subscription.p256dh,
                 Subscription.auth,
-                User.queue_id,
-            ).join(User)
+                Subscription.queue_id,
+            )
         )
 
         rows = res.all()
@@ -125,6 +113,7 @@ async def get_all_sub():
             })
 
         return payload
+
 
 async def delete_sub(endpoint: str):
     if AsyncSessionLocal is None:
@@ -150,6 +139,7 @@ async def delete_sub(endpoint: str):
             await session.rollback()
             raise
 
+
 def disable_db():
     """Отключаем доступ к БД, если нет конфига или подключение упало."""
     global AsyncSessionLocal
@@ -161,3 +151,113 @@ def disable_db():
         pass
     AsyncSessionLocal = None
     log.warning("Database disabled (config missing or init failed).")
+
+
+async def add_tg_subscriber(id, queue_iq):
+    if AsyncSessionLocal is None:
+        log.warning("db is None")
+        return
+    async with AsyncSessionLocal() as session:
+        try:
+            ex = select(TgSub).where(TgSub.tg_id == id)
+            res = await session.execute(ex)
+            if res.scalar_one_or_none() is not None:
+                return -1
+            user = TgSub(tg_id=id, queue_id=queue_iq)
+            session.add(user)
+            await session.commit()
+
+            await session.refresh(user)
+
+            log.info(f"added user {user}")
+        except Exception as e:
+            log.exception("Error while adding tg subscriber")
+            await session.rollback()
+
+async def get_tg_subscriber(tg_id: int) -> TgSub | None:
+    if AsyncSessionLocal is None:
+        log.warning("db is None")
+        return None
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(
+                select(TgSub).where(TgSub.tg_id == tg_id)
+            )
+            return result.scalar_one_or_none()
+        except Exception:
+            log.exception(f"Error while getting tg_sub {tg_id}")
+            return None
+
+async def get_all_tg_subscribers() -> list[TgSub]:
+    if AsyncSessionLocal is None:
+        log.warning("db is None")
+        return []
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(select(TgSub))
+            return list(result.scalars().all())
+        except Exception:
+            log.exception("Error while getting all tg_subs")
+            return []
+
+
+async def delete_tg_subscriber(tg_id: int) -> int:
+    if AsyncSessionLocal is None:
+        log.warning("db is None")
+        return 0
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(
+                select(TgSub).where(TgSub.tg_id == tg_id)
+            )
+            user = result.scalar_one_or_none()
+
+            if user is None:
+                return -1
+            
+            await session.delete(user)
+            await session.commit()
+
+            log.info(f"Deleted tg_sub with tg_id={tg_id}")
+            return 1
+
+        except Exception:
+            log.exception(f"Error while deleting tg_sub {tg_id}")
+            await session.rollback()
+            return 0
+
+
+async def upsert_tg_subscriber(tg_id: int, queue_id: int) -> int:
+    if AsyncSessionLocal is None:
+        log.warning("db is None")
+        return 0
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await session.execute(
+                select(TgSub).where(TgSub.tg_id == tg_id)
+            )
+            user = result.scalar_one_or_none()
+
+            if user is None:
+                user = TgSub(tg_id=tg_id, queue_id=queue_id)
+                session.add(user)
+                action = "created"
+                code = 2
+            else:
+                user.queue_id = queue_id
+                action = "updated"
+                code = 1
+
+            await session.commit()
+            await session.refresh(user)
+
+            log.info(f"{action} tg_sub: tg_id={user.tg_id}, queue_id={user.queue_id}")
+            return code
+
+        except Exception:
+            log.exception(f"Error while upserting tg_sub tg_id={tg_id}")
+            await session.rollback()
+            return 0

@@ -2,7 +2,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import json, os
+import os
 
 from typing import Any
 
@@ -11,14 +11,17 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Load .env before importing modules that rely on it (db/redis configs)
+load_dotenv()
+
+import bot.bot as bot
 import untils.redis_db as redis_un
 from untils import notifier
 from untils import subcription
 from untils import cache
-from db.orm.session import AsyncSessionLocal
 import db.orm.utils as db
 
-load_dotenv()
+import asyncio
 
 import logging as log
 
@@ -42,6 +45,8 @@ app.add_middleware(
 )
 
 ISDB = True
+
+BOT_ONLINE = os.getenv("BOT_ONLINE") == "true"
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
@@ -191,7 +196,8 @@ async def start():
     else:
         log.info("db disabled, offline mode")
     
-
+    if BOT_ONLINE:
+        asyncio.create_task(bot.start_bot())
     redis_client = await redis_un.init_redis()
     subcription.set_redis_client(redis_client)
     await subcription.load_subscriptions_from_storage()
