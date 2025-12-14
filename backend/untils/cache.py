@@ -15,10 +15,13 @@ for index in QUEUE_LABELS:
 for index in _all_index:
     _all_bias.append(tools.bias_from_index(index))
 
-async def cache_loop():  
+async def cache_loop():
+    new_cache = []
     for queue, bias in zip(_all_index, _all_bias):
-        _cache_queue.append(await tools.get_status(queue, bias))
-    
+        new_cache.append(await tools.get_status(queue, bias))
+        
+    global _cache_queue
+    _cache_queue = new_cache
     log.debug(f"\n\tall_index: {_all_index}\n\tall_bias: {_all_bias}\n\tcache: {_cache_queue}\n\t")
 
 async def get_cache(queue):
