@@ -14,12 +14,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ensure the app directory is at the front of sys.path so local modules (e.g. bot/)
-# are used even inside Docker where a third-party 'bot' module might exist.
-ROOT_DIR = Path(__file__).resolve().parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
 import bot.bot as bot
 import untils.redis_db as redis_un
 from untils import notifier
@@ -32,7 +26,7 @@ import asyncio
 import logging as log
 
 log.basicConfig(
-    level=log.DEBUG,
+    level=log.info,
     format="! [%(levelname)s] %(message)s"
 )
 

@@ -1,5 +1,6 @@
 /* eslint-disable no-unused-vars */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import styles from "./App.module.css";
 
 const queueOptions = ["11", "12", "21", "22", "31", "32", "41", "42", "51", "52", "61", "62"];
@@ -384,12 +385,12 @@ function App() {
         </div>
       </div>
 
-      <a className={`${styles.btnContainer} ${btnFinished ? styles.btnFinished : ""}`} href="/info">
+      <Link className={`${styles.btnContainer} ${btnFinished ? styles.btnFinished : ""}`} to="/info">
         <span className={styles.infoText}>Інформація про сайт</span>
-      </a>
-      <a className={`${styles.showBtn} ${showBtnFinished ? styles.showBtnFinished : ""}`} href="/info" aria-label="Перейти до сторінки з інформацією про сайт">
+      </Link>
+      <Link className={`${styles.showBtn} ${showBtnFinished ? styles.showBtnFinished : ""}`} to="/info" aria-label="Перейти до сторінки з інформацією про сайт">
         i
-      </a>
+      </Link>
 
       {isModalOpen && (
         <>
