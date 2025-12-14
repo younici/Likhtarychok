@@ -8,6 +8,11 @@ def queue_to_index(n: int) -> int:
     y = n % 10
     return (x - 1) * 2 + y
 
+def index_to_queue(idx: int) -> int:
+    y = 2 if idx % 2 == 0 else 1
+    x = (idx - 1) // 2 + 1
+    return x * 10 + y    
+
 def bias_from_index(idx: int) -> int:
     return 2 if idx % 2 == 0 else 3
 

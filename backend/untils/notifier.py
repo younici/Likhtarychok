@@ -10,6 +10,7 @@ from untils import subcription
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+BOT_ONLINE = os.getenv("BOT_ONLINE", "false").lower() == "true"
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +69,35 @@ async def save_all_to_redis():
     await subcription.save_all_to_redis()
 
 
+async def _send_telegram_notifications(text: str, queue: int | None = None):
+    if not BOT_ONLINE:
+        return 0, []
+
+    try:
+        from bot.untils.notifier import send_notify
+    except Exception as exc:
+        log.warning("Telegram notifier unavailable: %s", exc)
+        return 0, [str(exc)]
+
+    tg_subs = subcription.get_telegram_subs(queue)
+    sent = 0
+    errors: list[str] = []
+
+    for sub in tg_subs:
+        tg_id = (sub or {}).get("id") or (sub or {}).get("tg_id")
+        if tg_id is None:
+            continue
+        try:
+            result = await send_notify(int(tg_id), text)
+            if result == 1:
+                sent += 1
+        except Exception as exc:
+            log.warning("Telegram notify failed for %s: %s", tg_id, exc)
+            errors.append(f"{tg_id}: {exc}")
+
+    return sent, errors
+
+
 async def notify_all(title: str, message: str):
     sent = 0
     errors: list[str] = []
@@ -102,7 +132,9 @@ async def notify_all(title: str, message: str):
             log.error("Unexpected push error for %s...: %s", endpoint[:80], ex)
             errors.append(f"{endpoint[:80]}...: {ex}")
 
-    return {"sent": sent, "errors": errors}
+    tg_sent, tg_errors = await _send_telegram_notifications(f"{title}\n{message}")
+
+    return {"sent": sent, "errors": errors, "tg_sent": tg_sent, "tg_errors": tg_errors}
 
 
 async def check_and_notify():
@@ -197,4 +229,14 @@ async def send_push_all(title: str, body: str, queue: int):
             sent += 1
         except Exception as ex:
             log.warning("Push failed: %s", ex)
-    log.info("Notifications sent for queue %s: %s", subcription.queue_label(target_queue), sent)
+    tg_sent, tg_errors = await _send_telegram_notifications(f"{title}\n{body}", target_queue)
+
+    if tg_errors:
+        log.warning("Telegram notify errors for queue %s: %s", target_queue, tg_errors)
+
+    log.info(
+        "Notifications sent for queue %s: push=%s tg=%s",
+        subcription.queue_label(target_queue),
+        sent,
+        tg_sent,
+    )

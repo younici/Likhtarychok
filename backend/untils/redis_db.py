@@ -116,3 +116,11 @@ async def load_all_into_subcription() -> bool:
     log.info("Loaded subscriptions from Redis: push=%s, tg=%s", len(push_raw), len(tg_raw))
 
     return True
+
+
+async def delete_tg_subscription(tg_id: int) -> bool:
+    """Remove a Telegram subscriber from Redis cache by Telegram id."""
+    if not _redis_client:
+        return False
+    await _redis_client.hdel("tg_subscriptions", tg_id)
+    return True

@@ -7,7 +7,6 @@ import untils.redis_db as redis_un
 import db.orm.utils as db
 from db.orm.session import AsyncSessionLocal
 from db.orm.models.subscription import Subscription
-from db.orm.models.user import User
 from sqlalchemy import select
 
 from untils.variebles import QUEUE_LABELS
@@ -20,7 +19,6 @@ telegram_subscriptions: Dict[int, List[dict]] = {}
 
 _redis_client = None
 
-# Queue labels map
 
 def set_redis_client(client):
     global _redis_client
@@ -111,6 +109,70 @@ def forget_push_subscription(endpoint: str):
     return False
 
 
+def normalize_tg_subscription(sub: Any):
+    if not sub:
+        return None
+
+    if isinstance(sub, str):
+        try:
+            sub = json.loads(sub)
+        except json.JSONDecodeError:
+            return None
+
+    tg_id = None
+    queue_id = None
+
+    if isinstance(sub, dict):
+        tg_id = sub.get("tg_id") or sub.get("id")
+        queue_id = sub.get("queue") if sub.get("queue") is not None else sub.get("queue_id")
+    else:
+        tg_id = getattr(sub, "tg_id", None)
+        queue_id = getattr(sub, "queue_id", None)
+
+    if tg_id is None:
+        return None
+
+    queue_code = queue_code_from_input(queue_id)
+    try:
+        tg_numeric = int(tg_id)
+    except (TypeError, ValueError):
+        return None
+
+    return {"id": tg_numeric, "queue": queue_code}
+
+
+def remember_telegram_subscription(sub_data: dict):
+    normalized = normalize_tg_subscription(sub_data)
+    if not normalized:
+        return
+
+    forget_telegram_subscription(normalized["id"])
+
+    queue = normalized["queue"]
+    telegram_subscriptions.setdefault(queue, []).append(normalized)
+
+
+def get_telegram_subs(queue: Optional[int] = None) -> List[dict]:
+    if queue is None:
+        combined = []
+        for bucket in telegram_subscriptions.values():
+            combined.extend(bucket)
+        return combined
+
+    queue_code = queue_code_from_input(queue)
+    return telegram_subscriptions.get(queue_code, [])
+
+
+def forget_telegram_subscription(identifier: int):
+    removed = False
+    for queue_id, bucket in list(telegram_subscriptions.items()):
+        filtered = [item for item in bucket if (item or {}).get("id") != identifier]
+        if len(filtered) != len(bucket):
+            telegram_subscriptions[queue_id] = filtered
+            removed = True
+    return removed
+
+
 def normalize_subscription(sub: Any):
     if not sub:
         return None
@@ -132,13 +194,6 @@ def normalize_subscription(sub: Any):
         auth = getattr(sub, "auth", None)
 
         queue_id = getattr(sub, "queue_id", None)
-        if queue_id is None:
-            try:
-                user = getattr(sub, "user", None)
-            except Exception:
-                user = None
-            if user is not None:
-                queue_id = getattr(user, "queue_id", None)
     elif isinstance(sub, dict):
         endpoint = sub.get("endpoint")
         queue_id = sub.get("queue")
@@ -165,6 +220,22 @@ def normalize_subscription(sub: Any):
     return normalized
 
 
+def replace_push_subscriptions(raw_subscriptions: List[Any]):
+    global push_subscriptions
+    push_subscriptions = {}
+    for item in raw_subscriptions:
+        normalized = normalize_subscription(item)
+        if normalized:
+            remember_push_subscription(normalized)
+
+
+def replace_telegram_subscriptions(raw_subscriptions: List[Any]):
+    global telegram_subscriptions
+    telegram_subscriptions = {}
+    for item in raw_subscriptions:
+        remember_telegram_subscription(item)
+
+
 async def save_subscription_db(queue: int, sub_payload: dict):
     if AsyncSessionLocal is None:
         log.warning("save_subscription_db(): DB not available, skipping.")
@@ -181,45 +252,29 @@ async def save_subscription_db(queue: int, sub_payload: dict):
 
     async with AsyncSessionLocal() as session:
         try:
-            stmt = (
-                select(Subscription, User)
-                .join(User, Subscription.user_id == User.id, isouter=True)
-                .where(Subscription.endpoint == endpoint)
-            )
+            stmt = select(Subscription).where(Subscription.endpoint == endpoint)
             res = await session.execute(stmt)
-            row = res.first()
+            existing = res.scalar_one_or_none()
 
-            if row:
-                existing, user = row
+            if existing:
                 existing.p256dh = p256dh
                 existing.auth = auth
-
-                if user:
-                    user.queue_id = queue
-                else:
-                    new_user = User(queue_id=queue)
-                    session.add(new_user)
-                    await session.flush()
-                    existing.user_id = new_user.id
+                existing.queue_id = queue
 
                 await session.commit()
-                return existing.user_id
-
-            user = User(queue_id=queue)
-            session.add(user)
-            await session.flush()
+                return existing.id
 
             new_sub = Subscription(
                 endpoint=endpoint,
                 p256dh=p256dh,
                 auth=auth,
-                user_id=user.id,
+                queue_id=queue,
             )
             session.add(new_sub)
             await session.commit()
 
             log.info("Subscription saved: %s...", endpoint[:50])
-            return new_sub.user_id
+            return new_sub.id
 
         except Exception:
             await session.rollback()
@@ -232,58 +287,40 @@ async def save_all_to_redis():
         return
 
     try:
-        all_subs = [json.dumps(sub) for sub in get_push_subs() if sub]
-
-        await _redis_client.delete("subscriptions")
-
-        if all_subs:
-            await _redis_client.rpush("subscriptions", *all_subs)
-
-        log.info("Synced subscriptions to Redis: %s", len(all_subs))
+        await redis_un.save_push_subscriptions(list(get_push_subs()))
+        await redis_un.save_tg_subscriptions(list(get_telegram_subs()))
     except Exception as exc:
         log.warning("Redis sync failed, disabling cache: %s", exc)
         _redis_client = None
 
 
 async def load_subscriptions_from_storage(force_db: bool = False):
-    global push_subscriptions, _redis_client
+    global push_subscriptions, telegram_subscriptions, _redis_client
 
     push_subscriptions = {}
-    subs_data = None
+    telegram_subscriptions = {}
+    loaded = False
 
     if _redis_client and not force_db:
         try:
-            subs_data = await redis_un.load_push_subscriptions_raw()
+            loaded = await redis_un.load_all_into_subcription()
         except Exception as exc:
             log.warning("Failed to load subscriptions from Redis, disabling cache: %s", exc)
             _redis_client = None
 
-    if subs_data:
-        loaded = 0
-        for item in subs_data:
-            normalized = normalize_subscription(item)
-            if not normalized:
-                continue
-            remember_push_subscription(normalized)
-            loaded += 1
-        log.info("Loaded subscriptions from Redis: %s", loaded)
+    if loaded:
         return
 
-    log.info("Subscriptions not found in Redis, falling back to DB.")
+    log.info("Loading subscriptions from DB (Redis unavailable or force_db=True).")
+
     db_subs = await db.get_all_http_sub()
-    loaded = 0
-    for item in db_subs or []:
-        normalized = normalize_subscription(item)
-        if not normalized:
-            continue
-        remember_push_subscription(normalized)
-        loaded += 1
-    if not loaded:
-        log.info("No subscriptions found in the database.")
-    else:
-        log.info("Loaded subscriptions from database: %s", loaded)
-        if _redis_client:
-            await save_all_to_redis()
+    replace_push_subscriptions(db_subs or [])
+
+    tg_db_subs = await db.get_all_tg_subscribers()
+    replace_telegram_subscriptions([{"id": sub.tg_id, "queue": sub.queue_id} for sub in tg_db_subs or []])
+
+    if _redis_client:
+        await save_all_to_redis()
 
 
 async def remove_push_subscription(endpoint: str):
@@ -300,32 +337,3 @@ async def remove_push_subscription(endpoint: str):
 
     await save_all_to_redis()
     return removed
-
-
-# Placeholders for future Telegram subscription handlers
-def remember_telegram_subscription(sub_data: dict):
-    queue = queue_code_from_input(sub_data.get("queue"))
-    sub_data["queue"] = queue
-    telegram_subscriptions.setdefault(queue, []).append(sub_data)
-
-
-def get_telegram_subs(queue: Optional[int] = None) -> List[dict]:
-    if queue is None:
-        combined = []
-        for bucket in telegram_subscriptions.values():
-            combined.extend(bucket)
-        return combined
-    queue_code = queue_code_from_input(queue)
-    return telegram_subscriptions.get(queue_code, [])
-
-
-def forget_telegram_subscription(identifier: str):
-    for queue_id, bucket in list(telegram_subscriptions.items()):
-        for idx, item in enumerate(bucket):
-            if item.get("id") == identifier:
-                try:
-                    bucket.pop(idx)
-                except Exception:
-                    pass
-                return True
-    return False
