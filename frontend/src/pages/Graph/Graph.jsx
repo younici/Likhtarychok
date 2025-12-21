@@ -322,7 +322,7 @@ function Graph() {
 
   async function subscribeViaSite() {
     if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("На жаль в вашому браузері немає підтримки веб сповіщень, ви можете підписатися на сповіщення в телеграмі");
+      alert("На жаль, ваш браузер не підтримує вебсповіщення. Ви можете підписатися на сповіщення в Telegram.");
       return;
     }
 
@@ -362,7 +362,7 @@ function Graph() {
       const msg = result?.msg || (answer.ok ? "ok" : "Помилка підписки");
       alert(`${msg} ${queueLabel}`);
     } catch (_) {
-      alert("На жаль в вашому браузері немає підтримки веб сповіщень, ви можете підписатися на сповіщення в телеграмі");
+      alert("На жаль, ваш браузер не підтримує вебсповіщення. Ви можете підписатися на сповіщення в Telegram.");
     } finally {
       setIsModalOpen(false);
     }
@@ -407,7 +407,7 @@ function Graph() {
 
   const outageContent = useMemo(() => {
     if (!hasData) {
-      return <p className={styles.outageEmpty}>Немає даних по графіку</p>;
+      return <p className={styles.outageEmpty}>Немає даних щодо графіка</p>;
     }
 
     if (outageRanges.length === 0) {
@@ -426,16 +426,15 @@ function Graph() {
       <div className={styles.container}>
         <div className={styles.mainElements}>
           <p>
-            Якщо дозволите сповіщення то ми повідомимо про відключення світла за
-            годину по графіку.
+            Якщо дозволите сповіщення, ми повідомимо про відключення світла за годину до планового часу за графіком.
           </p>
 
           <div className={styles.buttonsDiv}>
             <button type="button" onClick={() => setIsModalOpen(true)}>
-              Пiдписатись на сповіщення
+              Підписатися на сповіщення
             </button>
             <button type="button" onClick={unsubscribe}>
-              Відписатись від сповіщень
+              Відписатися від сповіщень
             </button>
           </div>
 
@@ -455,13 +454,13 @@ function Graph() {
           </select>
 
           <button type="button" className={styles.refreshQueue} onClick={() => fetchStatuses(queue)} disabled={isLoading}>
-            {isLoading ? "Оновлюємо..." : "Оновити iнформацiю"}
+            {isLoading ? "Оновлюємо..." : "Оновити інформацію"}
           </button>
         </div>
 
         <div className={styles.toggleBlock}>
           <p>
-            Переключити вигляд графіку
+            Перемкнути вигляд графіка
             <br />
             <br />
             Графік / Години
@@ -515,16 +514,16 @@ function Graph() {
       {isModalOpen && (
         <>
           <div className={styles.modal}>
-            <p>Виберіть куди нам відсилати вам сповіщення</p>
+            <p>Виберіть, куди ми надсилатимемо сповіщення</p>
             <button type="button" className={styles.closeModal} onClick={() => setIsModalOpen(false)}>
               X
             </button>
             <div className={styles.modalButtons}>
               <a className={styles.selectorBtn} href="https://t.me/likhtarychok_bot" target="_blank" rel="noreferrer">
-                Телеграм Бот
+                Телеграм-бот
               </a>
               <button type="button" className={styles.selectorBtn} onClick={subscribeViaSite}>
-                Через сайт (Не у всіх працює)
+                Через сайт (працює не у всіх)
               </button>
             </div>
           </div>
