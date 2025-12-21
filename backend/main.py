@@ -7,7 +7,7 @@ import sys
 
 from typing import Any
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from dotenv import load_dotenv
@@ -24,6 +24,8 @@ import db.orm.utils as db
 import asyncio
 
 import logging as log
+
+from proto import status_pb2
 
 log.basicConfig(
     level=log.INFO,
@@ -136,6 +138,57 @@ async def notify(req: Request):
 async def get_status(queue: str | None = None):
     queue_code = subcription.queue_code_from_input(queue)
     return {"Status": await notifier.parse_status_for_queue(queue_code)}
+
+
+def _extract_grpc_web_message(raw: bytes) -> bytes:
+    """Return the protobuf payload from a gRPC-web frame or raw body."""
+    if len(raw) >= 5 and raw[0] in (0x00, 0x01, 0x80):
+        try:
+            msg_len = int.from_bytes(raw[1:5], "big")
+            return raw[5 : 5 + msg_len]
+        except Exception:
+            return raw
+    return raw
+
+
+def _grpc_status_payload(statuses: list[int]) -> bytes:
+    response_msg = status_pb2.StatusResponse(status=statuses)
+    message_bytes = response_msg.SerializeToString()
+    data_frame = b"\x00" + len(message_bytes).to_bytes(4, "big") + message_bytes
+
+    trailers = b"grpc-status:0\r\ngrpc-message:\r\n"
+    trailer_frame = b"\x80" + len(trailers).to_bytes(4, "big") + trailers
+
+    return data_frame + trailer_frame
+
+
+@app.post(f"{BASE_PATH}/grpc/StatusService/GetStatus")
+async def grpc_get_status(req: Request):
+    """gRPC-web endpoint for status polling."""
+    body = await req.body()
+    message = _extract_grpc_web_message(body)
+
+    queue = None
+    try:
+        parsed = status_pb2.StatusRequest()
+        parsed.ParseFromString(message)
+        queue = parsed.queue
+    except Exception:
+        queue = req.query_params.get("queue")
+
+    queue_code = subcription.queue_code_from_input(queue)
+    statuses = await notifier.parse_status_for_queue(queue_code)
+    payload = _grpc_status_payload(statuses)
+
+    return Response(
+        content=payload,
+        media_type="application/grpc-web+proto",
+        headers={
+            "grpc-status": "0",
+            "grpc-message": "",
+            "Access-Control-Expose-Headers": "grpc-status, grpc-message",
+        },
+    )
 
 @app.on_event("startup")
 async def start():

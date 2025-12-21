@@ -6,7 +6,124 @@ import styles from "./Graph.module.css";
 const queueOptions = ["11", "12", "21", "22", "31", "32", "41", "42", "51", "52", "61", "62"];
 const defaultStatuses = Array(48).fill(false);
 
-const apiBase = import.meta.env.VITE_API_BASE
+const apiBase = import.meta.env.VITE_API_BASE;
+const grpcStatusEndpoint = `${apiBase}/grpc/StatusService/GetStatus`;
+
+const textEncoder = new TextEncoder();
+
+function encodeVarint(value) {
+  const bytes = [];
+  let v = value >>> 0;
+  while (v >= 0x80) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  bytes.push(v);
+  return Uint8Array.from(bytes);
+}
+
+function decodeVarint(bytes, start = 0) {
+  let result = 0;
+  let shift = 0;
+  let pos = start;
+
+  while (pos < bytes.length) {
+    const byte = bytes[pos];
+    result |= (byte & 0x7f) << shift;
+    pos += 1;
+    if ((byte & 0x80) === 0) break;
+    shift += 7;
+  }
+
+  return [result, pos - start];
+}
+
+function encodeStatusRequest(queue = "") {
+  const queueBytes = textEncoder.encode(queue);
+  const lenBytes = encodeVarint(queueBytes.length);
+  const message = new Uint8Array(1 + lenBytes.length + queueBytes.length);
+  message[0] = 0x0a; // field 1, wire type 2
+  message.set(lenBytes, 1);
+  message.set(queueBytes, 1 + lenBytes.length);
+  return message;
+}
+
+function wrapGrpcWebMessage(messageBytes) {
+  const buffer = new Uint8Array(5 + messageBytes.length);
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  buffer[0] = 0x00; // data frame
+  view.setUint32(1, messageBytes.length, false);
+  buffer.set(messageBytes, 5);
+  return buffer;
+}
+
+function unwrapGrpcWebMessage(buffer) {
+  const bytes = new Uint8Array(buffer);
+  if (bytes.length < 5) throw new Error("Invalid gRPC-web response");
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const isDataFrame = bytes[0] === 0x00 || bytes[0] === 0x01;
+  if (!isDataFrame) throw new Error("Unexpected gRPC-web frame");
+
+  const msgLength = view.getUint32(1, false);
+  const end = 5 + msgLength;
+  if (end > bytes.length) throw new Error("Truncated gRPC-web payload");
+
+  return bytes.slice(5, end);
+}
+
+function decodeStatusResponse(messageBytes) {
+  const result = [];
+  let pos = 0;
+
+  while (pos < messageBytes.length) {
+    const tag = messageBytes[pos];
+    pos += 1;
+    const field = tag >> 3;
+    const wireType = tag & 0x07;
+
+    if (field === 1 && wireType === 2) {
+      const [length, lenBytes] = decodeVarint(messageBytes, pos);
+      pos += lenBytes;
+      const end = pos + length;
+      while (pos < end) {
+        const [val, read] = decodeVarint(messageBytes, pos);
+        result.push(Boolean(val));
+        pos += read;
+      }
+    } else if (wireType === 0) {
+      const [, read] = decodeVarint(messageBytes, pos);
+      pos += read;
+    } else if (wireType === 2) {
+      const [length, lenBytes] = decodeVarint(messageBytes, pos);
+      pos += lenBytes + length;
+    } else {
+      break;
+    }
+  }
+
+  return result;
+}
+
+async function fetchStatusGrpc(queue) {
+  const message = encodeStatusRequest(queue ?? "");
+  const payload = wrapGrpcWebMessage(message);
+
+  const response = await fetch(grpcStatusEndpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/grpc-web+proto",
+      "X-Grpc-Web": "1",
+    },
+    body: payload,
+  });
+
+  if (!response.ok) throw new Error(`gRPC request failed (${response.status})`);
+
+  const buffer = await response.arrayBuffer();
+  const messageBytes = unwrapGrpcWebMessage(buffer);
+  return decodeStatusResponse(messageBytes);
+}
 
 const timeSlots = [
   "00:00–01:00",
@@ -157,9 +274,7 @@ function Graph() {
   const fetchStatuses = useCallback(async (selectedQueue) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${apiBase}/status?queue=${selectedQueue}`);
-      const json = await response.json();
-      const source = Array.isArray(json?.Status) ? json.Status : [];
+      const source = await fetchStatusGrpc(selectedQueue);
       const normalized = normalizeStatuses(source);
       setStatuses(normalized);
       setHasData(source.length > 0);
@@ -175,6 +290,11 @@ function Graph() {
 
   useEffect(() => {
     fetchStatuses(queue);
+  }, [queue, fetchStatuses]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => fetchStatuses(queue), 5 * 60 * 1000);
+    return () => clearInterval(intervalId);
   }, [queue, fetchStatuses]);
 
   useEffect(() => {

@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package svitlyachok;
+
+message StatusRequest {
+  string queue = 1;
+}
+
+message StatusResponse {
+  repeated bool status = 1;
+}
+
+service StatusService {
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+}
