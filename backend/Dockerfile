@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./bot ./bot
 COPY ./db ./db
 COPY ./untils ./untils
+COPY ./proto ./proto
 COPY ./main.py ./main.py
 
 EXPOSE 8000
