@@ -1,0 +1,139 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.header {
+  padding: 1.4rem;
+  border-radius: 18px;
+  border: var(--stroke);
+  background: linear-gradient(145deg, rgba(12, 27, 46, 0.88), rgba(12, 27, 46, 0.65));
+  box-shadow: var(--shadow-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+  font-size: 0.85rem;
+}
+
+.lead {
+  color: var(--text-muted);
+}
+
+.highlights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  border: var(--stroke);
+  border-radius: 16px;
+  padding: 1.1rem;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: var(--shadow-lift);
+}
+
+.label {
+  color: var(--text-muted);
+}
+
+.value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0.2rem 0 0.4rem;
+}
+
+.copy {
+  color: var(--text-muted);
+}
+
+.load {
+  border: var(--stroke);
+  border-radius: 18px;
+  padding: 1.3rem 1.4rem;
+  background: linear-gradient(170deg, rgba(12, 27, 46, 0.9), rgba(12, 27, 46, 0.7));
+  display: grid;
+  grid-template-columns: 1.2fr 1.3fr;
+  gap: 1.2rem;
+}
+
+.loadGrid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.loadCard {
+  border-radius: 14px;
+  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.warm {
+  border-color: rgba(255, 202, 107, 0.28);
+}
+
+.calm {
+  border-color: rgba(108, 240, 194, 0.24);
+}
+
+.ok {
+  border-color: rgba(108, 240, 194, 0.2);
+}
+
+.roadmap {
+  border: var(--stroke);
+  border-radius: 18px;
+  padding: 1.3rem;
+  background: rgba(255, 255, 255, 0.03);
+  display: grid;
+  grid-template-columns: 1.1fr 1.2fr;
+  gap: 1.2rem;
+}
+
+.roadmapList {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.roadmapItem {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.7rem;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-secondary), var(--accent));
+  margin-top: 0.15rem;
+}
+
+@media (max-width: 900px) {
+  .load,
+  .roadmap {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .header,
+  .card,
+  .roadmapItem,
+  .loadCard {
+    padding: 1rem;
+  }
+}

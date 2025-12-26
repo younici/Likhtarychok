@@ -1,12 +1,17 @@
-from db.orm.base import Base
-from db.orm.session import engine, AsyncSessionLocal, db_available
-from sqlalchemy import select, text, inspect
-
-from db.orm.models import Subscription, TgSub
-
 import logging
+import os
+
+from datetime import datetime, timedelta
+
+from sqlalchemy import inspect, select, text
+
+from db.orm.base import Base
+from db.orm.models import Subscription, SupportAdmin, SupportBan, SupportTicket, SupportTicketMessage, TgSub
+from db.orm.session import AsyncSessionLocal, db_available, engine
 
 log = logging.getLogger(__name__)
+
+PRIMARY_SUPPORT_ADMIN = int(os.getenv("HELP_BASE_ADMIN_ID", "0") or 0)
 
 
 async def init_db():
@@ -17,6 +22,7 @@ async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_ensure_subscription_columns)
+        await conn.run_sync(_ensure_support_tables)
 
 
 def _ensure_subscription_columns(sync_conn):
@@ -25,6 +31,291 @@ def _ensure_subscription_columns(sync_conn):
 
     if "queue_id" not in columns:
         sync_conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS queue_id INTEGER DEFAULT 0"))
+
+
+def _ensure_support_tables(sync_conn):
+    inspector = inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+
+    if "support_admins" not in tables:
+        SupportAdmin.__table__.create(sync_conn, checkfirst=True)
+    if "support_tickets" not in tables:
+        SupportTicket.__table__.create(sync_conn, checkfirst=True)
+    if "support_bans" not in tables:
+        SupportBan.__table__.create(sync_conn, checkfirst=True)
+    if "support_ticket_messages" not in tables:
+        SupportTicketMessage.__table__.create(sync_conn, checkfirst=True)
+
+
+async def ensure_support_admin(tg_id: int, is_primary: bool = False) -> bool:
+    if AsyncSessionLocal is None or not tg_id:
+        return False
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(SupportAdmin).where(SupportAdmin.tg_id == tg_id)
+        res = await session.execute(stmt)
+        existing = res.scalar_one_or_none()
+
+        if existing:
+            if is_primary and not existing.is_primary:
+                existing.is_primary = True
+                await session.commit()
+            return True
+
+        session.add(SupportAdmin(tg_id=tg_id, is_primary=is_primary))
+        await session.commit()
+        return True
+
+
+async def ensure_primary_support_admin():
+    if PRIMARY_SUPPORT_ADMIN:
+        try:
+            return await ensure_support_admin(PRIMARY_SUPPORT_ADMIN, is_primary=True)
+        except Exception:
+            try:
+                await init_db()
+                return await ensure_support_admin(PRIMARY_SUPPORT_ADMIN, is_primary=True)
+            except Exception:
+                log.exception("Failed to ensure primary support admin")
+                return False
+    return False
+
+
+async def get_active_ban(user_id: int) -> SupportBan | None:
+    if AsyncSessionLocal is None:
+        return None
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(SupportBan).where(SupportBan.user_id == user_id))
+        ban = res.scalar_one_or_none()
+        if not ban:
+            return None
+        if ban.until and ban.until < datetime.now(tz=ban.until.tzinfo):
+            # ban expired -> cleanup
+            await session.delete(ban)
+            await session.commit()
+            return None
+        return ban
+
+
+async def set_support_ban(user_id: int, until: datetime | None, reason: str | None) -> bool:
+    if AsyncSessionLocal is None:
+        return False
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(SupportBan).where(SupportBan.user_id == user_id))
+            ban = res.scalar_one_or_none()
+            if ban:
+                ban.until = until
+                ban.reason = reason
+            else:
+                session.add(SupportBan(user_id=user_id, until=until, reason=reason))
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to set support ban")
+            return False
+
+
+async def remove_support_ban(user_id: int) -> bool:
+    if AsyncSessionLocal is None:
+        return False
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(SupportBan).where(SupportBan.user_id == user_id))
+            ban = res.scalar_one_or_none()
+            if not ban:
+                return False
+            await session.delete(ban)
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to remove support ban")
+            return False
+
+
+async def list_support_admin_ids() -> list[int]:
+    if AsyncSessionLocal is None:
+        return [PRIMARY_SUPPORT_ADMIN] if PRIMARY_SUPPORT_ADMIN else []
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(SupportAdmin.tg_id))
+        ids = [row[0] for row in res.all()]
+
+        if PRIMARY_SUPPORT_ADMIN and PRIMARY_SUPPORT_ADMIN not in ids:
+            ids.append(PRIMARY_SUPPORT_ADMIN)
+        return ids
+
+
+async def is_support_admin(tg_id: int) -> bool:
+    if not tg_id:
+        return False
+    admins = await list_support_admin_ids()
+    return tg_id in admins
+
+
+async def remove_support_admin(tg_id: int) -> bool:
+    if AsyncSessionLocal is None or not tg_id:
+        return False
+    if tg_id == PRIMARY_SUPPORT_ADMIN and PRIMARY_SUPPORT_ADMIN:
+        # базового адміна не видаляємо
+        return False
+
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(SupportAdmin).where(SupportAdmin.tg_id == tg_id))
+            admin = res.scalar_one_or_none()
+            if not admin:
+                return False
+            await session.delete(admin)
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to remove support admin %s", tg_id)
+            return False
+
+
+async def is_help_bot_admin(tg_id: int) -> bool:
+    """Alias for підтримки-бoта, щоб не плодити зависимости."""
+    return await is_support_admin(tg_id)
+
+
+async def create_support_ticket(user_id: int, username: str | None, message: str) -> SupportTicket | None:
+    if AsyncSessionLocal is None:
+        log.warning("DB not available, skipping ticket creation")
+        return None
+
+    async with AsyncSessionLocal() as session:
+        try:
+            ticket = SupportTicket(user_id=user_id, username=username, message=message, status="open")
+            session.add(ticket)
+            await session.commit()
+            await session.refresh(ticket)
+            return ticket
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to create support ticket")
+            return None
+
+
+async def get_ticket(ticket_id: int) -> SupportTicket | None:
+    if AsyncSessionLocal is None:
+        return None
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
+        return res.scalar_one_or_none()
+
+
+async def get_last_ticket_time(user_id: int) -> datetime | None:
+    if AsyncSessionLocal is None:
+        return None
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(
+            select(SupportTicket.created_at)
+            .where(SupportTicket.user_id == user_id)
+            .order_by(SupportTicket.created_at.desc())
+            .limit(1)
+        )
+        row = res.first()
+        return row[0] if row else None
+
+
+async def can_create_ticket(user_id: int, cooldown_minutes: int = 30) -> tuple[bool, int]:
+    """
+    Returns (allowed, wait_seconds).
+    """
+    last_ts = await get_last_ticket_time(user_id)
+    if not last_ts:
+        return True, 0
+    now = datetime.now(tz=last_ts.tzinfo)
+    delta = (now - last_ts).total_seconds()
+    cooldown = cooldown_minutes * 60
+    if delta >= cooldown:
+        return True, 0
+    return False, int(cooldown - delta)
+
+
+async def mark_ticket_answered(ticket_id: int, admin_id: int, answer_text: str) -> bool:
+    if AsyncSessionLocal is None:
+        return False
+
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
+            ticket = res.scalar_one_or_none()
+            if not ticket:
+                return False
+
+            ticket.status = "answered"
+            ticket.answer_text = answer_text
+            ticket.answered_by = admin_id
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to mark ticket answered")
+            return False
+
+
+async def delete_ticket(ticket_id: int) -> bool:
+    if AsyncSessionLocal is None:
+        return False
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
+            ticket = res.scalar_one_or_none()
+            if not ticket:
+                return False
+            await session.delete(ticket)
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to delete support ticket")
+            return False
+
+
+async def save_ticket_message(ticket_id: int, admin_id: int, chat_id: int, message_id: int) -> None:
+    if AsyncSessionLocal is None:
+        return
+    async with AsyncSessionLocal() as session:
+        try:
+            session.add(
+                SupportTicketMessage(
+                    ticket_id=ticket_id,
+                    admin_id=admin_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to save ticket message mapping")
+
+
+async def get_ticket_messages(ticket_id: int) -> list[SupportTicketMessage]:
+    if AsyncSessionLocal is None:
+        return []
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(SupportTicketMessage).where(SupportTicketMessage.ticket_id == ticket_id))
+        return list(res.scalars().all())
+
+
+async def delete_ticket_messages(ticket_id: int) -> None:
+    if AsyncSessionLocal is None:
+        return
+    async with AsyncSessionLocal() as session:
+        try:
+            await session.execute(
+                SupportTicketMessage.__table__.delete().where(SupportTicketMessage.ticket_id == ticket_id)
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            log.exception("Failed to delete ticket message mappings")
 
 
 def _extract_subscription_data(data: dict):

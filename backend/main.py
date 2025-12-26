@@ -3,18 +3,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
-import sys
 
 from typing import Any
 
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
+from fastapi.responses import Response
 from dotenv import load_dotenv
 
 load_dotenv()
 
 import bot.bot as bot
+import help_bot.bot as help_bot
 import untils.redis_db as redis_un
 from untils import notifier
 from untils import subcription
@@ -52,6 +50,7 @@ ISDB = True
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
 
 BOT_ONLINE = os.getenv("BOT_ONLINE") == "true"
+HELP_BOT_TOKEN = help_bot.HELP_BOT_TOKEN
 OFFLINE = os.getenv("OFFLINE", "false").lower() == "true"
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
@@ -216,6 +215,11 @@ async def start():
     
     if BOT_ONLINE:
         asyncio.create_task(bot.start_bot())
+
+    if HELP_BOT_TOKEN:
+        asyncio.create_task(help_bot.start_help_bot())
+    else:
+        log.info("help bot is disabled (no HELP_BOT_TOKEN)")
     redis_client = await redis_un.init_redis()
     subcription.set_redis_client(redis_client)
     await subcription.load_subscriptions_from_storage()

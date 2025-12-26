@@ -1,4 +1,3 @@
-/* eslint-disable no-unused-vars */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import styles from "./Graph.module.css";
@@ -6,7 +5,11 @@ import styles from "./Graph.module.css";
 const queueOptions = ["11", "12", "21", "22", "31", "32", "41", "42", "51", "52", "61", "62"];
 const defaultStatuses = Array(48).fill(false);
 
-const apiBase = import.meta.env.VITE_API_BASE;
+const apiBase =
+  import.meta.env.API_BASE_PATH ||
+  import.meta.env.VITE_API_BASE ||
+  import.meta.env.VITE_API_BASE_PATH ||
+  "";
 const grpcStatusEndpoint = `${apiBase}/grpc/StatusService/GetStatus`;
 
 const textEncoder = new TextEncoder();
@@ -153,7 +156,17 @@ const timeSlots = [
 ];
 
 const lampOffSvg = (
-  <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+  <svg
+    viewBox="0 0 24 24"
+    width="22"
+    height="22"
+    stroke="currentColor"
+    fill="none"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
     <path d="M9 18h6" />
     <path d="M10 21h4" />
     <path d="M8 15a6 6 0 1 1 8 0l-1 1.5H9z" />
@@ -247,8 +260,6 @@ function Graph() {
   const [publicKey, setPublicKey] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [btnFinished, setBtnFinished] = useState(false);
-  const [showBtnFinished, setShowBtnFinished] = useState(false);
 
   const queueLabel = `${queue[0]}.${queue[1]}`;
 
@@ -300,15 +311,6 @@ function Graph() {
   useEffect(() => {
     ensurePublicKey();
   }, [ensurePublicKey]);
-
-  useEffect(() => {
-    const timer1 = setTimeout(() => setBtnFinished(true), 3000);
-    const timer2 = setTimeout(() => setShowBtnFinished(true), 3700);
-    return () => {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
-    };
-  }, []);
 
   const statusRows = useMemo(
     () =>
@@ -422,115 +424,154 @@ function Graph() {
   }, [hasData, outageRanges]);
 
   return (
-    <>
-      <div className={styles.container}>
-        <div className={styles.mainElements}>
-          <p>
-            Якщо дозволите сповіщення, ми повідомимо про відключення світла за годину до планового часу за графіком.
+    <div className={styles.page}>
+      <section className={styles.hero}>
+        <div className={styles.heroText}>
+          <p className={styles.eyebrow}>Графік для вашої черги</p>
+          <h1>Контролюйте чергу {queueLabel} та отримуйте нагадування за годину</h1>
+          <p className={styles.lead}>
+            Перемикайтесь між виглядом «Графік» та «Години», оновлюйте дані вручну та підключайте push-сповіщення.
+            Якщо потрібні деталі — зазирніть у <Link to="/faq">FAQ</Link>.
           </p>
+          <div className={styles.meta}>
+            <span>Оновлення кожні 5 хв</span>
+            <span>Push + Telegram</span>
+            <span>Житомирська область</span>
+          </div>
+        </div>
 
-          <div className={styles.buttonsDiv}>
-            <button type="button" onClick={() => setIsModalOpen(true)}>
-              Підписатися на сповіщення
-            </button>
-            <button type="button" onClick={unsubscribe}>
-              Відписатися від сповіщень
+        <div className={styles.heroCard}>
+          <div className={styles.cardHeader}>
+            <div>
+              <p className={styles.label}>Ваша черга</p>
+              <p className={styles.copy}>Зберігаємо вибір у браузері та не запитуємо персональні дані.</p>
+            </div>
+            <span className={styles.queuePill}>{queueLabel}</span>
+          </div>
+
+          <div className={styles.selectRow}>
+            <select
+              id="queueSelector"
+              className={styles.queueSelector}
+              value={queue}
+              onChange={(e) => setQueue(e.target.value)}
+            >
+              {queueOptions.map((value) => (
+                <option key={value} value={value}>
+                  {value[0]}.{value[1]}
+                </option>
+              ))}
+            </select>
+            <button type="button" className={styles.refreshQueue} onClick={() => fetchStatuses(queue)} disabled={isLoading}>
+              {isLoading ? "Оновлюємо..." : "Оновити"}
             </button>
           </div>
 
-          <p>Виберіть чергу</p>
+          <div className={styles.toggleRow}>
+            <div>
+              <p className={styles.label}>Перемкнути вигляд</p>
+              <p className={styles.copy}>Графік або готові інтервали без світла.</p>
+            </div>
+            <label className={styles.switch}>
+              <input
+                type="checkbox"
+                id="queueToggle"
+                checked={useOutageView}
+                onChange={(e) => setUseOutageView(e.target.checked)}
+              />
+              <span className={styles.switchLabel}>{useOutageView ? "Години" : "Графік"}</span>
+            </label>
+          </div>
+        </div>
+      </section>
 
-          <select
-            id="queueSelector"
-            className={styles.queueSelector}
-            value={queue}
-            onChange={(e) => setQueue(e.target.value)}
-          >
-            {queueOptions.map((value) => (
-              <option key={value} value={value}>
-                {value[0]}.{value[1]}
-              </option>
-            ))}
-          </select>
-
-          <button type="button" className={styles.refreshQueue} onClick={() => fetchStatuses(queue)} disabled={isLoading}>
-            {isLoading ? "Оновлюємо..." : "Оновити інформацію"}
-          </button>
+      <section className={styles.actionsRow}>
+        <div className={styles.actionCard}>
+          <div>
+            <p className={styles.label}>Сповіщення за годину</p>
+            <p className={styles.copy}>
+              Надішлемо нагадування перед плановим відключенням. Якщо web-push недоступний, використовуйте{" "}
+              <a href="https://t.me/likhtarychok_help_bot" target="_blank" rel="noreferrer">Telegram-бот підтримки</a>.
+            </p>
+          </div>
+          <div className={styles.actionButtons}>
+            <button type="button" onClick={() => setIsModalOpen(true)}>
+              Увімкнути сповіщення
+            </button>
+            <button type="button" className={styles.ghostButton} onClick={unsubscribe}>
+              Скасувати підписку
+            </button>
+          </div>
         </div>
 
-        <div className={styles.toggleBlock}>
-          <p>
-            Перемкнути вигляд графіка
-            <br />
-            <br />
-            Графік / Години
+        <div className={styles.noteCard}>
+          <p className={styles.label}>Нагадуємо</p>
+          <p className={styles.copy}>
+            Офіційний графік може змінюватися протягом дня. Якщо бачите розбіжності — перевірте повторно або зайдіть у Telegram-бот.
           </p>
-          <label className={styles.switch}>
-            <input type="checkbox" id="queueToggle" checked={useOutageView} onChange={(e) => setUseOutageView(e.target.checked)} />
-            <span className={styles.slider}></span>
-          </label>
         </div>
+      </section>
 
-        <div
-          className={`${styles.rowContainer} ${useOutageView ? styles.disp : ""} ${isLoading ? styles.disp : ""}`}
-          style={isLoading ? { display: "none" } : undefined}
-        >
-          <div className={styles.statusContainer}>
+      <section className={styles.grid}>
+        <div className={`${styles.card} ${useOutageView ? styles.collapsed : ""} ${isLoading ? styles.faded : ""}`}>
+          <div className={styles.cardHeader}>
+            <div>
+              <p className={styles.label}>Графік для черги {queueLabel}</p>
+              <p className={styles.copy}>Оновлюємо кожні 5 хвилин. Натисніть «Оновити», якщо потрібна актуальність просто зараз.</p>
+            </div>
+            <div className={styles.legend}>
+              <span className={styles.legendDot} />
+              <span>Планове відключення</span>
+            </div>
+          </div>
+
+          <div className={styles.schedule}>
             {statusRows.map(([left, right], idx) => (
-              <div key={`status-${idx}`} className={styles.statusElement}>
-                <div className={`${styles.status} ${left ? styles.off : ""}`}>{left ? lampOffSvg : null}</div>
-                <div className={`${styles.status} ${right ? styles.off : ""}`}>{right ? lampOffSvg : null}</div>
+              <div key={`status-${idx}`} className={styles.row}>
+                <div className={styles.time}>{timeSlots[idx]}</div>
+                <div className={`${styles.slot} ${left ? styles.off : ""}`}>{left ? lampOffSvg : null}</div>
+                <div className={`${styles.slot} ${right ? styles.off : ""}`}>{right ? lampOffSvg : null}</div>
               </div>
             ))}
           </div>
-
-          <div className={styles.timeContainer}>
-            {timeSlots.map((slot) => (
-              <p key={slot} className={styles.rowElement}>
-                {slot}
-              </p>
-            ))}
-          </div>
         </div>
 
-        <div
-          className={`${styles.outageSummary} ${useOutageView ? "" : styles.disp} ${isLoading ? styles.disp : ""}`}
-          style={isLoading ? { display: "none" } : undefined}
-        >
-          <p className={styles.outageTitle}>Години без світла</p>
-          <div id="outageList" className={styles.outageList}>
-            {outageContent}
+        <div className={`${styles.outageCard} ${useOutageView ? "" : styles.collapsed} ${isLoading ? styles.faded : ""}`}>
+          <div className={styles.cardHeader}>
+            <div>
+              <p className={styles.label}>Години без світла</p>
+              <p className={styles.copy}>Список інтервалів для черги {queueLabel}</p>
+            </div>
+            <span className={styles.chip}>{useOutageView ? "Вигляд: Години" : "Вигляд: Графік"}</span>
           </div>
+          <div className={styles.outageList}>{outageContent}</div>
+          <Link className={styles.faqLink} to="/faq">
+            Перейти до FAQ
+          </Link>
         </div>
-      </div>
-
-      <Link className={`${styles.btnContainer} ${btnFinished ? styles.btnFinished : ""}`} to="/">
-        <span className={styles.infoText}>Інформація про сайт</span>
-      </Link>
-      <Link className={`${styles.showBtn} ${showBtnFinished ? styles.showBtnFinished : ""}`} to="/" aria-label="Перейти до сторінки з інформацією про сайт">
-        i
-      </Link>
+      </section>
 
       {isModalOpen && (
         <>
           <div className={styles.modal}>
-            <p>Виберіть, куди ми надсилатимемо сповіщення</p>
+            <p className={styles.label}>Куди надсилати сповіщення?</p>
+            <p className={styles.copy}>Обирайте варіант, який підходить пристрою. Push працює не у всіх браузерах.</p>
             <button type="button" className={styles.closeModal} onClick={() => setIsModalOpen(false)}>
-              X
+              ✕
             </button>
             <div className={styles.modalButtons}>
-              <a className={styles.selectorBtn} href="https://t.me/likhtarychok_bot" target="_blank" rel="noreferrer">
-                Телеграм-бот
+              <a className={styles.selectorBtn} href="https://t.me/likhtarychok_help_bot" target="_blank" rel="noreferrer">
+                Telegram-бот підтримки
               </a>
               <button type="button" className={styles.selectorBtn} onClick={subscribeViaSite}>
-                Через сайт (працює не у всіх)
+                Через сайт (web-push)
               </button>
             </div>
           </div>
-          <div className={styles.modalOverlay} onClick={() => setIsModalOpen(false)}></div>
+          <div className={styles.modalOverlay} onClick={() => setIsModalOpen(false)} />
         </>
       )}
-      </>
+    </div>
   );
 }
 

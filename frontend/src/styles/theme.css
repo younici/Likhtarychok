@@ -1,14 +1,25 @@
 :root {
-  --bg-body: #181d22;
-  --text-color: #d6d6d6;
+  --bg-body: #050914;
+  --bg-surface: #0c1b2e;
+  --bg-panel: rgba(255, 255, 255, 0.03);
+  --bg-card: #0f253b;
 
-  --accent: #64a8db;
-  --button-bg: #548ebb;
-  --container-bg: #3f698a;
-  --slider-bg: #548ebb;
-  --slider-main: #b4d8f3;
-  --slider-active: #62a3d4;
-  --off-icon-bg: #5188b3;
-  --queue-selector-bg: #64a8db;
-  --border: solid var(--accent) 2px;
+  --text-primary: #e9f1ff;
+  --text-muted: #9db3ce;
+  --text-contrast: #0c1827;
+
+  --accent: #ffca6b;
+  --accent-strong: #ff9d42;
+  --accent-secondary: #6cf0c2;
+
+  --stroke: 1px solid rgba(255, 255, 255, 0.08);
+  --shadow-soft: 0 24px 64px rgba(5, 10, 30, 0.55);
+  --shadow-lift: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --card-radius: 18px;
+  --grid-gap: 1.25rem;
+
+  --success: #7ee0b5;
+  --warning: #f7b267;
+  --danger: #ff8c8c;
 }
