@@ -30,6 +30,7 @@ async def bot_set_queue(msg: Message):
 async def bot_delete_queue(msg: Message):
     id = msg.from_user.id
     status = await db.delete_tg_subscriber(id)
+    await redisdb.delete_tg_subscription(id)
     log.info(f"status: {status}")
     match status:
         case -1:
@@ -38,7 +39,6 @@ async def bot_delete_queue(msg: Message):
             await msg.answer("На жаль зараз у нашого бота немає змоги видалити вашу підписку, будь-ласка спробуйте пізніше")
         case 1:
             await msg.answer("Ваша підписка успішно видалена")
-    await redisdb.delete_tg_subscription(id)
      
 
 @router.callback_query(F.data.startswith("qi"))

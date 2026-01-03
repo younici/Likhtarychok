@@ -10,7 +10,6 @@ let apiBase =
   import.meta.env.VITE_API_BASE ||
   import.meta.env.VITE_API_BASE_PATH ||
   "";
-apiBase = "https://likhtarychok.org/api"
 const grpcStatusEndpoint = `${apiBase}/grpc/StatusService/GetStatus`;
 
 // Копіюємо потрібні функції для gRPC (ті самі, що в Graph)
