@@ -558,7 +558,7 @@ function Graph() {
             Перейти до FAQ
           </Link>
         </div>
-
+        
         <div className={`${styles.widgetCard}`}>
           <p className={`${styles.widgetHero}`}>Віджет</p>
           <p>Доадайте компактний віджет на головний екран для швидкого перегляду графіку</p>

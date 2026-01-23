@@ -51,8 +51,17 @@ function Layout() {
         <Outlet />
       </main>
 
-      <script async="async" data-cfasync="false" src="https://pl28354173.effectivegatecpm.com/f756b89b922a64931ef1bbcf889211f7/invoke.js"></script>
-      <div id="container-f756b89b922a64931ef1bbcf889211f7"></div>
+    <amp-ad width="100vw" height="320"
+      type="adsense"
+      data-ad-client="ca-pub-2059432028788704"
+      data-ad-slot="6758173909"
+      data-auto-format="rspv"
+      data-full-width="">
+      <div overflow=""></div>
+    </amp-ad>
+
+      {/* <script async="async" data-cfasync="false" src="https://pl28354173.effectivegatecpm.com/f756b89b922a64931ef1bbcf889211f7/invoke.js"></script>
+      <div id="container-f756b89b922a64931ef1bbcf889211f7"></div> */}
 
       <footer className={styles.footer}>
         <div>

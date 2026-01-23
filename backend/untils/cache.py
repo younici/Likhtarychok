@@ -21,7 +21,8 @@ async def cache_loop():
         new_cache.append(await tools.get_status(queue, bias))
         
     global _cache_queue
-    _cache_queue = new_cache
+    if new_cache:
+        _cache_queue = new_cache
     log.debug(f"\n\tall_index: {_all_index}\n\tall_bias: {_all_bias}\n\tcache: {_cache_queue}\n\t")
 
 async def get_cache(queue):
