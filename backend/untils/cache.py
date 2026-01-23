@@ -20,7 +20,7 @@ async def cache_loop():
     new_cache = []
     for queue, bias in zip(_all_index, _all_bias):
         new_cache.append(await tools.get_status(queue, bias))
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         
     global _cache_queue
     if new_cache:
