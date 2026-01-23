@@ -1,7 +1,7 @@
-import aiohttp
-import asyncio
-
+import aiohttp, asyncio, logging
 from bs4 import BeautifulSoup
+
+log = logging.Logger(__name__)
 
 def queue_to_index(n: int) -> int:
     x = n // 10
@@ -33,8 +33,10 @@ async def get_status(queue, bias):
                 resp.raise_for_status()
                 html = await resp.text()
     except asyncio.TimeoutError:
+        log.error("time out")
         return None
     except aiohttp.ClientError:
+        log.error("client err")
         return None
     
     soup = BeautifulSoup(html, "html.parser")
