@@ -21,10 +21,15 @@ async def cache_loop():
     for queue, bias in zip(_all_index, _all_bias):
         new_cache.append(await tools.get_status(queue, bias))
         await asyncio.sleep(5)
-        
+    
     global _cache_queue
-    if new_cache:
+    if new_cache and (len(new_cache) == (len(_all_index) + len(_all_bias))):
         _cache_queue = new_cache
+    else:
+        await asyncio.sleep(30)
+        await cache_loop()
+        return
+
     log.debug(f"\n\tall_index: {_all_index}\n\tall_bias: {_all_bias}\n\tcache: {_cache_queue}\n\t")
 
 async def get_cache(queue):
