@@ -17,20 +17,17 @@ log = logging.getLogger(__name__)
 
 notified_slots = set()
 
-
 def _cleanup_notified(current_date):
     prefix = current_date.strftime("%Y-%m-%d")
     stale = [key for key in notified_slots if not key.startswith(prefix)]
     for key in stale:
         notified_slots.discard(key)
 
-
 def _slot_key(current_date, queue, hour, minute=None):
     queue_code = subcription.queue_code_from_input(queue)
     queue_lbl = subcription.queue_label(queue_code)
     time_part = f"{hour:02d}" if minute is None else f"{hour:02d}:{minute:02d}"
     return f"{current_date.strftime('%Y-%m-%d')}-q{queue_lbl}-{time_part}"
-
 
 def _hour_state(status, hour):
     if not status or hour < 0:
@@ -52,7 +49,6 @@ def _hour_state(status, hour):
     idx = min(hour * 2, total - 1)
     return 1 if status[idx] else 0
 
-
 async def parse_status_for_queue(queue_code: int):
     label = subcription.queue_label(queue_code)
     try:
@@ -61,14 +57,11 @@ async def parse_status_for_queue(queue_code: int):
         log.error("parse failed for queue %s, %s: %s", queue_code, label, exc)
         return []
 
-
 async def load_subscriptions_from_storage(force_db: bool = False):
     await subcription.load_subscriptions_from_storage(force_db=force_db)
 
-
 async def save_all_to_redis():
     await subcription.save_all_to_redis()
-
 
 async def _send_telegram_notifications(text: str, queue: int | None = None):
     if not BOT_ONLINE:
@@ -97,7 +90,6 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
             errors.append(f"{tg_id}: {exc}")
 
     return sent, errors
-
 
 async def notify_all(title: str, message: str):
     sent = 0
@@ -137,7 +129,6 @@ async def notify_all(title: str, message: str):
 
     return {"sent": sent, "errors": errors, "tg_sent": tg_sent, "tg_errors": tg_errors}
 
-
 async def check_and_notify():
     try:
         now = datetime.now()
@@ -157,7 +148,6 @@ async def check_and_notify():
 
     except Exception as e:
         log.error("check_and_notify failed: %s", e)
-
 
 async def _process_queue_schedule(queue: int, status: list[int] | None, now: datetime):
     if not status:
@@ -209,7 +199,6 @@ async def _process_queue_schedule(queue: int, status: list[int] | None, now: dat
             queue=queue,
         )
         notified_slots.add(slot_id)
-
 
 async def send_push_all(title: str, body: str, queue: int):
     target_queue = subcription.queue_code_from_input(queue)

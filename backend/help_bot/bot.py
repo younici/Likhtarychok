@@ -7,6 +7,7 @@ from db.orm import utils as db
 from help_bot.handlers import admin, common, tickets
 
 HELP_BOT_TOKEN = os.getenv("HELP_BOT_TOKEN")
+BOT_ONLINE = os.getenv("BOT_ONLINE") == "true"
 
 dp = Dispatcher()
 bot: Bot | None = None
@@ -29,7 +30,8 @@ async def start_help_bot():
     dp.include_router(admin.router)
     dp.include_router(tickets.router)
 
-    await dp.start_polling(bot)
+    if BOT_ONLINE:
+        await dp.start_polling(bot)
 
 
 def get_help_bot() -> Bot | None:

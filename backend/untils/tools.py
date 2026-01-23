@@ -1,9 +1,10 @@
-import aiohttp
-import asyncio
-
+import aiohttp, asyncio, logging
 from bs4 import BeautifulSoup
 
+log = logging.getLogger(__name__)
+
 def queue_to_index(n: int) -> int:
+    """Переводит 11 -> 1, 12 -> 2, 21 -> 3 и т.д."""
     x = n // 10
     y = n % 10
     return (x - 1) * 2 + y
@@ -33,12 +34,23 @@ async def get_status(queue, bias):
                 resp.raise_for_status()
                 html = await resp.text()
     except asyncio.TimeoutError:
+        log.error("time out")
         return None
     except aiohttp.ClientError:
+        log.error("client err")
         return None
     
     soup = BeautifulSoup(html, "html.parser")
-    table = soup.find_all("table")[3].select("tr")
+    try:
+        table = soup.find_all("table")[3].select("tr")
+        row_index = 1 + queue
+        
+        if row_index >= len(table):
+            log.error(f"Row index {row_index} out of range")
+            return None
 
-    cells = table[1 + queue].select("td")[bias:]
-    return "".join(str(td) for td in cells)
+        cells = table[row_index].select("td")[bias:]
+        return "".join(str(td) for td in cells)
+    except Exception as e:
+        log.error(f"Parsing error: {e}")
+        return None
