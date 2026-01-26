@@ -25,5 +25,4 @@ COPY ./main.py ./main.py
 
 EXPOSE 8000 8338
 
-CMD uvicorn main:app --host 0.0.0.0 --port 8000 & \
-    python -m bots.status_bot.untils.socket   
+CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=8000"]
