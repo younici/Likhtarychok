@@ -1,4 +1,4 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 import os
 
 DB_USER = os.getenv("DB_USER")
@@ -8,6 +8,8 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME")
 
 _has_db_config = all([DB_USER, DB_PASS, DB_HOST, DB_NAME])
+
+AsyncSessionLocal: async_sessionmaker[AsyncSession] | None = None
 
 if _has_db_config:
     db_url = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
