@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from backend.bots.status_bot.untils.socket import Light_Events
 import bots.notifier_bot.bot as notify_bot
 import bots.help_bot.bot as help_bot
 import bots.status_bot.bot as status_bot
@@ -251,19 +250,3 @@ async def grpc_get_status(req: Request):
             "Access-Control-Expose-Headers": "grpc-status, grpc-message",
         },
     )
-
-from fastapi import WebSocket
-
-@app.websocket("/ws")          # або "/status", "/light" — що тобі зручніше
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    log.info("New WebSocket connection established")
-
-    try:
-        if Light_Events.on:
-            await Light_Events.on()
-        await websocket.wait_closed()
-    finally:
-        if not states.closing:
-            if Light_Events.off:
-                await Light_Events.off()
