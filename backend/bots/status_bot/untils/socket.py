@@ -19,12 +19,11 @@ async def handle_connection(websocket):
         await Light_Events.on()
     _status = True
 
-    try:
-        async for message in websocket:
-            pass
+    await websocket.wait_closed()
+
             
-    except websockets.exceptions.ConnectionClosed:
-        pass
+    try:
+        await websocket.wait_closed()
     finally:
         if Light_Events.off and not states.closing:
             _log.info("Triggering light off event")
@@ -45,8 +44,7 @@ async def main():
     async with websockets.serve(
         handle_connection, 
         "0.0.0.0", 8338, 
-        ping_interval=1,
-        ping_timeout=2
+        ping_interval=None
     ):
         await asyncio.Future()
 
