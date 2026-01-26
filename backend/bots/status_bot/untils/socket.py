@@ -14,10 +14,12 @@ async def handle_connection(websocket):
     _log.info("New WebSocket connection established")
     global _status
 
-    if Light_Events.on:
-        _log.info("Triggering light on event")
-        await Light_Events.on()
-    _status = True
+    try:
+        if Light_Events.on:
+            _log.info("Triggering light ON event")
+            await Light_Events.on()
+    except Exception as e:
+        _log.error(f"Error executing Light_Events.on: {e}")
 
     await websocket.wait_closed()
 
@@ -25,10 +27,13 @@ async def handle_connection(websocket):
     try:
         await websocket.wait_closed()
     finally:
-        if Light_Events.off and not states.closing:
-            _log.info("Triggering light off event")
-            await Light_Events.off()
-        _status = False
+        if not states.closing:
+            try:
+                if Light_Events.off:
+                    _log.info("Triggering light OFF event")
+                    await Light_Events.off()
+            except Exception as e:
+                _log.error(f"Error executing Light_Events.off: {e}")
 
 def get_status() -> bool:
     return _status
