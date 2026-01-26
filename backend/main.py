@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     else:
         log.info("app started in offline mode")
 
-    # scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
+    scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
     scheduler.start()
 
     global DB_ONLINE
