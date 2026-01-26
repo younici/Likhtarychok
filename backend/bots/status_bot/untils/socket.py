@@ -56,3 +56,7 @@ async def main():
 class Light_Events():
     on = None
     off = None
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
