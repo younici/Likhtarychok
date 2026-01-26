@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
+from contextlib import asynccontextmanager
+
 from typing import Any
 
 from fastapi.responses import Response
@@ -11,8 +13,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import bot.bot as bot
-import help_bot.bot as help_bot
+import bots.notifier_bot.bot as notify_bot
+import bots.help_bot.bot as help_bot
+import bots.status_bot.bot as status_bot
+
+import bots.status_bot.untils.socket as socket
+import bots.status_bot.untils.subs as secret_subs
+
+import untils.states as states
+
 import untils.redis_db as redis_un
 from untils import notifier
 from untils import subcription
@@ -30,10 +39,77 @@ log.basicConfig(
     format="! [%(levelname)s] %(message)s"
 )
 
+BASE_PATH = "/api"
+ISDB = True
+DB_ONLINE = os.getenv("DB_ONLINE") == "true"
+NOTIFY_PASS = os.getenv("NOTIFY_PASS")
+ONLINE = os.getenv("ONLINE", "false").lower() == "true"
+REDIS_ONLINE = os.getenv("REDIS_ONLINE", "true").lower() == "true"
+
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = AsyncIOScheduler()
+    if ONLINE:
+        scheduler.add_job(notifier.check_and_notify, "cron", minute="*/30")
+    else:
+        log.info("app started in offline mode")
+
+    # scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
+    scheduler.start()
+
+    global DB_ONLINE
+
+    if DB_ONLINE:
+        try:
+            await db.init_db()
+            subs = await db.get_all_secret_subs()
+            secret_subs.set_subs(subs)
+            log.info(f"Loaded secret subs from DB: {subs}")
+        except Exception as exc:
+            log.warning(f"init_db() failed: {exc}")
+            db.disable_db()
+            global ISDB
+            ISDB = False
+            DB_ONLINE = False
+    else:
+        log.info("db disabled, offline mode")
+    
+    if REDIS_ONLINE:
+        redis_client = await redis_un.init_redis()
+        subcription.set_redis_client(redis_client)
+        await subcription.load_subscriptions_from_storage()
+
+    tasks = [
+        notify_bot.start_bot,
+        help_bot.start_bot,
+        status_bot.start_bot,
+        socket.main
+    ]
+
+    app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
+
+    yield
+
+    states.closing = True
+
+    if DB_ONLINE:
+        subs = secret_subs.get_subs()
+        log.info("Saving secret subs to DB...")
+        log.info(f"secret subs to save: {subs}")
+        await db.save_all_secret_subs(subs)
+
+    for task in app.state.bg_tasks:
+        task.cancel()
+    scheduler.shutdown()
+
 app = FastAPI(
     docs_url=None,
     redoc_url=None,
-    openapi_url=None
+    openapi_url=None,
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -43,18 +119,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-BASE_PATH = "/api"
-ISDB = True
-
-NOTIFY_PASS = os.getenv("NOTIFY_PASS")
-
-BOT_ONLINE = os.getenv("BOT_ONLINE") == "true"
-HELP_BOT_TOKEN = help_bot.HELP_BOT_TOKEN
-OFFLINE = os.getenv("OFFLINE", "false").lower() == "true"
-
-VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
-VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 
 @app.get(f"{BASE_PATH}/vapid_public_key")
 def vapid_key():
@@ -188,38 +252,3 @@ async def grpc_get_status(req: Request):
             "Access-Control-Expose-Headers": "grpc-status, grpc-message",
         },
     )
-
-@app.on_event("startup")
-async def start():
-    scheduler = AsyncIOScheduler()
-    if not OFFLINE:
-        scheduler.add_job(notifier.check_and_notify, "cron", minute="*/30")
-    else:
-        log.info("app started in offline mode")
-
-    scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
-    scheduler.start()
-
-    log.info("scheduler started")
-
-    if not OFFLINE:
-        try:
-            await db.init_db()
-        except Exception as exc:
-            log.warning(f"init_db() failed: {exc}")
-            db.disable_db()
-            global ISDB
-            ISDB = False
-    else:
-        log.info("db disabled, offline mode")
-    
-    if BOT_ONLINE:
-        asyncio.create_task(bot.start_bot())
-
-    if HELP_BOT_TOKEN:
-        asyncio.create_task(help_bot.start_help_bot())
-    else:
-        log.info("help bot is disabled (no HELP_BOT_TOKEN)")
-    redis_client = await redis_un.init_redis()
-    subcription.set_redis_client(redis_client)
-    await subcription.load_subscriptions_from_storage()

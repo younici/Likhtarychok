@@ -86,7 +86,7 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
             sent += 1
         except Exception as exc:
             log.warning("Telegram notify failed for %s: %s", tg_id, exc)
-            await dbM.delete_tg_sub(tg_id)
+            await dbM.notify_delete_tg_sub(tg_id)
             errors.append(f"{tg_id}: {exc}")
 
     return sent, errors
@@ -116,7 +116,7 @@ async def notify_all(title: str, message: str):
             log.warning("Push failed for %s...: %s (status=%s)", endpoint[:80], ex, status_code)
 
             if status_code in (404, 410):
-                await dbM.delete_web_sub(endpoint)
+                await dbM.notify_delete_web_sub(endpoint)
                 continue
 
             errors.append(f"{endpoint[:80]}...: {ex}")

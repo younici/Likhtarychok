@@ -1,4 +1,4 @@
-from bot.bot import get_bot
+from notifier_bot.bot import get_bot
 
 import logging
 log = logging.getLogger(__name__)

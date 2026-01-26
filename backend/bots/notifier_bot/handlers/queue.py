@@ -8,7 +8,7 @@ import db.orm.utils as db
 import untils.redis_db as redisdb
 from untils import subcription, tools, variebles
 
-import bot.keyboards.queueKeyboard as keyboard
+import bots.notifier_bot.keyboards.queueKeyboard as keyboard
 
 redis = None
 log = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ async def bot_set_queue(msg: Message):
 @router.message(Command("delete_queue"))
 async def bot_delete_queue(msg: Message):
     id = msg.from_user.id
-    _, _, status = await dbM.delete_tg_sub(id)
+    _, _, status = await dbM.notify_delete_tg_sub(id)
     log.info(f"status: {status}")
     match status:
         case -1:

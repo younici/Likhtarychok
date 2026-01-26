@@ -1,6 +1,6 @@
 from aiogram import Router
 from aiogram.types import Message
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 
 router = Router()
 
@@ -18,7 +18,7 @@ START_MESSAGE = """
 Для перегляду доступних команд напишіть /help
 """
 
-@router.message(Command("start"))
+@router.message(CommandStart())
 async def bot_start_cmd(msg: Message):
     await msg.answer(START_MESSAGE)
 
