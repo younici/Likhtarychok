@@ -87,17 +87,17 @@ async def lifespan(app: FastAPI):
     tasks = [
         notify_bot.start_bot,
         help_bot.start_bot,
-        status_bot.start_bot,
-        status_socket.main
+        status_bot.start_bot
     ]
 
     app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
+    app.state.bg_tasks.append(asyncio.create_task(status_socket.main(redis_client)))
 
     yield
 
     states.closing = True
 
-    await status_socket.save_all()
+    await status_socket.save_all(redis_client)
 
     if DB_ONLINE:
         subs = secret_subs.get_subs()

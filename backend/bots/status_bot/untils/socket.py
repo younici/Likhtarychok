@@ -13,8 +13,10 @@ _last_con_time: float = 0
 _last_con_duration: float = 0
 _last_on_trigger: float = 0
 _last_off_trigger: float = 0
+
 DEBOUNCE_ON_SEC = 30
 DEBOUNCE_OFF_SEC = 30
+
 async def handle_connection(websocket):
     _log.info("New WebSocket connection established")
 
@@ -79,49 +81,55 @@ def get_last_con_duration() -> float:
 def get_last_con_time() -> float:
     return _last_con_time
 
-async def save_all():
-    global _start
-    if _redis:
-        await _redis.set("socket_start_time", str(_start))
-        await _redis.set("light_status", str(int(_status)))
-        await _redis.set("last_connection_time", str(int(_last_con_time)))
-        await _redis.set("last_connection_duration", str(int(_last_con_duration)))
+async def save_all(redis_client: redis.Redis | None = None):
+    if redis_client:
+        await redis_client.set("socket_start_time", str(_start))
+        await redis_client.set("light_status", str(int(_status)))
+        await redis_client.set("last_connection_time", str(int(_last_con_time)))
+        await redis_client.set("last_connection_duration", str(int(_last_con_duration)))
 
-async def load_all():
+async def load_all(redis_client: redis.Redis | None = None):
     global _redis
     global _status
     global _start
     global _last_con_time
     global _last_con_duration
 
-    _redis = redis_un.get_redis_client()
-
-    if _redis:
-        status = await _redis.get("light_status")
+    if redis_client:
+        status = await redis_client.get("light_status")
         if status is not None:
             _status = bool(int(status))
         else:
             _status = False
-        start = await _redis.get("socket_start_time")
+        start = await redis_client.get("socket_start_time")
         if start is not None:
             _start = float(start)
-        last_time = await _redis.get("last_connection_time")
+
+    if redis_client:
+        status = await redis_client.get("light_status")
+        if status is not None:
+            _status = bool(int(status))
+        else:
+            _status = False
+        start = await redis_client.get("socket_start_time")
+        if start is not None:
+            _start = float(start)
+        last_time = await redis_client.get("last_connection_time")
         if last_time is not None:
             _last_con_time = float(last_time)
         else:
             _last_con_time = 0
-        last_duration = await _redis.get("last_connection_duration")
+        last_duration = await redis_client.get("last_connection_duration")
         if last_duration is not None:
             _last_con_duration = float(last_duration)
         else:
             _last_con_duration = 0
 
-async def main():
+async def main(redis_client: redis.Redis | None = None):
     await asyncio.sleep(0)
     _log.info("Starting WebSocket server on ws://0.0.0.0:8338")
 
-    await load_all()
-
+    await load_all(redis_client)
     async with websockets.serve(
         handle_connection, 
         "0.0.0.0", 8338, 
