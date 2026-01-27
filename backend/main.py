@@ -97,6 +97,8 @@ async def lifespan(app: FastAPI):
 
     states.closing = True
 
+    await status_socket.save_all()
+
     if DB_ONLINE:
         subs = secret_subs.get_subs()
         log.info("Saving secret subs to DB...")
