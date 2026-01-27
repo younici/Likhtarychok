@@ -30,9 +30,9 @@ async def handle_connection(websocket):
         if not states.closing:
             try:
                 if Light_Events.off and _status:
-                    _log.info("Triggering light OFF event")
-                    await Light_Events.off()
                     _status = False
+                    _log.info("Triggering light OFF event")
+                    await Light_Events.off()                    
                     if _redis:
                         await _redis.set("light_status", "0")
             except Exception as e:
