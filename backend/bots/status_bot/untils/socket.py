@@ -2,12 +2,12 @@ import asyncio
 import websockets
 
 import untils.states as states
-
+import untils.redis_db as redis_un
 import logging
 
 _log = logging.getLogger(__name__)
 
-
+_redis = redis_un.get_redis_client()
 _status: bool
 
 async def handle_connection(websocket):
@@ -15,9 +15,12 @@ async def handle_connection(websocket):
     global _status
 
     try:
-        if Light_Events.on:
+        if Light_Events.on and not _status:
             _log.info("Triggering light ON event")
             await Light_Events.on()
+            _status = True
+            if _redis:
+                await _redis.set("light_status", "1")
     except Exception as e:
         _log.error(f"Error executing Light_Events.on: {e}")
 
@@ -29,9 +32,12 @@ async def handle_connection(websocket):
     finally:
         if not states.closing:
             try:
-                if Light_Events.off:
+                if Light_Events.off and _status:
                     _log.info("Triggering light OFF event")
                     await Light_Events.off()
+                    _status = False
+                    if _redis:
+                        await _redis.set("light_status", "0")
             except Exception as e:
                 _log.error(f"Error executing Light_Events.off: {e}")
 
@@ -44,7 +50,11 @@ async def main():
     _log.info("Starting WebSocket server on ws://0.0.0.0:8338")
     
     global _status
-    _status = False
+    status = _redis.get("light_status")
+    if status is not None:
+        _status = bool(int(status))
+    else:
+        _status = False
 
     async with websockets.serve(
         handle_connection, 
