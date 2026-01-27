@@ -45,6 +45,7 @@ DB_ONLINE = os.getenv("DB_ONLINE") == "true"
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
 ONLINE = os.getenv("ONLINE", "false").lower() == "true"
 REDIS_ONLINE = os.getenv("REDIS_ONLINE", "true").lower() == "true"
+CAN_CACHE = os.getenv("CAN_CACHE", "true").lower() == "true"
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
@@ -57,7 +58,8 @@ async def lifespan(app: FastAPI):
     else:
         log.info("app started in offline mode")
 
-    scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
+    if CAN_CACHE:
+        scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
     scheduler.start()
 
     global DB_ONLINE

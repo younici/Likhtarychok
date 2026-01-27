@@ -7,7 +7,7 @@ import logging
 
 _log = logging.getLogger(__name__)
 
-_redis = redis_un.get_redis_client()
+_redis = None
 _status: bool
 
 async def handle_connection(websocket):
@@ -23,9 +23,6 @@ async def handle_connection(websocket):
                 await _redis.set("light_status", "1")
     except Exception as e:
         _log.error(f"Error executing Light_Events.on: {e}")
-
-    await websocket.wait_closed()
-
             
     try:
         await websocket.wait_closed()
@@ -48,11 +45,17 @@ async def main():
     await asyncio.sleep(0)
 
     _log.info("Starting WebSocket server on ws://0.0.0.0:8338")
-    
+    global _redis    
     global _status
-    status = _redis.get("light_status")
-    if status is not None:
-        _status = bool(int(status))
+
+    _redis = redis_un.get_redis_client()
+
+    if _redis:
+        status = await _redis.get("light_status")
+        if status is not None:
+            _status = bool(int(status))
+        else:
+            _status = False
     else:
         _status = False
 

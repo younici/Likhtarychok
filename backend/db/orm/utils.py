@@ -566,7 +566,6 @@ async def save_all_secret_subs(subs: list[int]) -> bool:
     
     async with AsyncSessionLocal() as session:
         for sub in subs:
-            log.warning(f"sub: {sub}\ntype: {type(sub)}")
             sub_obj = Subs(tg_id=sub)
             await session.merge(sub_obj)
         await session.commit()
