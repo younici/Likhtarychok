@@ -49,8 +49,8 @@ async def main():
     async with websockets.serve(
         handle_connection, 
         "0.0.0.0", 8338, 
-        ping_interval=2,
-        ping_timeout=3
+        ping_interval=4,
+        ping_timeout=6
     ):
         await asyncio.Future()
 
