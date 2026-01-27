@@ -16,6 +16,7 @@ load_dotenv()
 import bots.notifier_bot.bot as notify_bot
 import bots.help_bot.bot as help_bot
 import bots.status_bot.bot as status_bot
+import bots.status_bot.untils.socket as status_socket
 
 import bots.status_bot.untils.subs as secret_subs
 
@@ -84,7 +85,8 @@ async def lifespan(app: FastAPI):
     tasks = [
         notify_bot.start_bot,
         help_bot.start_bot,
-        status_bot.start_bot
+        status_bot.start_bot,
+        status_socket.main
     ]
 
     app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
