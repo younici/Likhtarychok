@@ -2,10 +2,8 @@ import bots.status_bot.untils.socket as socket
 
 import time
 
-_LIGHT_ON_MSG = """Світло ввімкнули
-"""
-_LIGHT_OFF_MSG = """Світло вимкнули
-""" 
+_LIGHT_ON_MSG = """Світло ввімкнули"""
+_LIGHT_OFF_MSG = """Світло вимкнули""" 
 import logging
 _log = logging.getLogger(__name__)
 
@@ -29,7 +27,12 @@ async def light_on():
     
     import bots.status_bot.untils.notify as notifier
     _log.info("notified light on")
-    msg = _LIGHT_ON_MSG + f", його не було {int(time.time() - socket.get_last_con_time())} секунд"
+    _time = 0
+    if socket.get_last_con_time() != 0:
+        _time = int(time.time() - socket.get_last_con_time())
+    else:
+        _time = 0
+    msg = _LIGHT_ON_MSG + f", його не було {f"невідомо" if _time == 0 else _time} секунд"
     await notifier.notify_all(msg)
 
 async def light_off():
