@@ -8,20 +8,23 @@ from bots.status_bot.untils.decorators import admin_only
 
 router = Router()
 
-START_MSG_ANSWER = """
-Цей бот створений для сповіщення про відключення в реальному часі, на основі реальних відключень, але поки тільки під 3.1 чергу
-Для перегляду списка команд скористайтесь /help
-"""
+START_MSG_ANSWER = (
+    "Цей бот створений для сповіщення про відключення світла в реальному часі.\n"
+    "Наразі працює для 3.1 черги.\n\n"
+    "Для перегляду команд використовуйте /help"
+)
 
-HELP_MSG_ANSWER = """
-Список команд:
-/subscribe - Підписатись на сповіщення
-/desubscribe - Відписатись від сповіщень
-/status - Переглянути наявний статус світла
-/time - Переглянути час тривалість наявності світла
-/help - Показати це повідомлення
-/start - Показати привітальне повідомлення
-"""
+HELP_MSG_ANSWER = (
+    "Список команд:\n"
+    "/subscribe — Підписатись на сповіщення\n"
+    "/desubscribe — Відписатись від сповіщень\n"
+    "/status — Поточний статус світла\n"
+    "/time — Тривалість поточного стану\n"
+    "/help — Показати це повідомлення\n"
+    "/start — Привітальне повідомлення"
+)
+
+
 @router.message(CommandStart())
 async def start_cmd(msg: Message):
     await msg.answer(START_MSG_ANSWER)
@@ -33,42 +36,57 @@ async def help_cmd(msg: Message):
 @router.message(Command("subscribe"))
 async def subscribe_cmd(msg: Message):
     if sub.add_sub(msg.from_user.id):
-        await msg.answer("Підпииска додана")
+        await msg.answer("Підписка додана")
     else:
         await msg.answer("Ви вже підписані")
 
 @router.message(Command("desubscribe"))
 async def desubscribe_cmd(msg: Message):
     if sub.remove_user(msg.from_user.id):
-        await msg.answer("Ви видалили підписку")
+        await msg.answer("Ви відписались від сповіщень")
     else:
         await msg.answer("Ви не підписані")
 
 @router.message(Command("status"))
 async def status_cmd(msg: Message):
-    status = socket.get_status()
-    if status:
+    if socket.get_status():
         await msg.answer("Світло є")
+        return
+
+    last_time = socket.get_last_con_time()
+    if last_time == 0:
+        await msg.answer("Світло відсутнє, востаннє світло було невідомо коли")
     else:
-        last_con_time = socket.get_last_con_time()
-        await msg.answer("Світло відсутнє, востаннє світло було " + (f"{int(last_con_time)} секунд тому" if last_con_time != 0 else "невідомо коли"))
+        await msg.answer(
+            f"Світло відсутнє, востаннє світло було {int(last_time)} секунд тому"
+        )
+
 
 @router.message(Command("time"))
 async def time_cmd(msg: Message):
-    conn_time = socket.get_connection_time()
-    if conn_time == 0:
-        last_con_duration = socket.get_last_con_duration()
-        await msg.answer(f"Світло відсутнє. Востаннє світло було {int(last_con_duration)} секунд")
-    else:
+    if socket.get_status():
+        conn_time = socket.get_connection_time()
         await msg.answer(f"Світло є вже {int(conn_time)} секунд")
+        return
+
+    last_duration = socket.get_last_con_duration()
+    if last_duration == 0:
+        await msg.answer("Світло відсутнє. Дані про попередній стан відсутні")
+    else:
+        await msg.answer(
+            f"Світло відсутнє. Востаннє світло було {int(last_duration)} секунд"
+        )
+
 
 @router.message(Command("notify_switch"))
 @admin_only
 async def notify_switch_cmd(msg: Message):
     import bots.status_bot.untils.notify_manager as notify_manager
 
-    current_state = notify_manager.get_enabled()
-    new_state = not current_state
+    new_state = not notify_manager.get_enabled()
     notify_manager.set_enabled(new_state)
 
-    await msg.answer(f"Сповіщення про зміну стану світла тепер {'увімкнені' if new_state else 'вимкнені'}")
+    await msg.answer(
+        f"Сповіщення про зміну стану світла "
+        f"{'увімкнені' if new_state else 'вимкнені'}"
+    )
