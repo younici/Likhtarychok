@@ -21,7 +21,7 @@ async def init_redis() -> redis.Redis | None:
     if not redis_url:
         return None
 
-    _redis_client = redis.from_url(redis_url)
+    _redis_client = redis.from_url(redis_url, decode_responses=True)
 
     try:
         await _redis_client.ping()
@@ -85,16 +85,14 @@ async def load_push_subscriptions_raw() -> list[str]:
     if not _redis_client:
         return []
 
-    subs = await _redis_client.lrange("subscriptions", 0, -1)
-    return [item.decode() if isinstance(item, (bytes, bytearray)) else item for item in subs]
+    return await _redis_client.lrange("subscriptions", 0, -1)
 
 
 async def load_tg_subscriptions_raw() -> list[str]:
     if not _redis_client:
         return []
 
-    subs = await _redis_client.hvals("tg_subscriptions")
-    return [item.decode() if isinstance(item, (bytes, bytearray)) else item for item in subs]
+    return await _redis_client.hvals("tg_subscriptions")
 
 
 async def load_all_into_subcription() -> bool:

@@ -68,7 +68,7 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
         return 0, []
 
     try:
-        from bot.untils.notifier import send_notify
+        from bots.notifier_bot.untils.notifier import send_notify
     except Exception as exc:
         log.warning("Telegram notifier unavailable: %s", exc)
         return 0, [str(exc)]
