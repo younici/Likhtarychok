@@ -17,8 +17,8 @@ async def handle_connection(websocket):
     try:
         if Light_Events.on and not _status:
             _log.info("Triggering light ON event")
-            await Light_Events.on()
             _status = True
+            await Light_Events.on()            
             if _redis:
                 await _redis.set("light_status", "1")
     except Exception as e:
