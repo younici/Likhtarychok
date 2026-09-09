@@ -551,21 +551,3 @@ async def upsert_tg_subscriber(tg_id: int, queue_id: int) -> int:
             log.exception(f"Error while upserting tg_sub tg_id={tg_id}")
             await session.rollback()
             return 0
-
-async def get_all_secret_subs() -> list[int] | None:
-    if AsyncSessionLocal is None:
-        return None
-
-    async with AsyncSessionLocal() as session:
-        res = await session.execute(select(Subs))
-        return [sub.tg_id for sub in res.scalars().all()]
-
-async def save_all_secret_subs(subs: list[int]) -> bool:
-    if AsyncSessionLocal is None or not subs:
-        return False
-    
-    async with AsyncSessionLocal() as session:
-        for sub in subs:
-            sub_obj = Subs(tg_id=sub)
-            await session.merge(sub_obj)
-        await session.commit()
