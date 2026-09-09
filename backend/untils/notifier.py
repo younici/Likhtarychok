@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pywebpush import webpush, WebPushException
 
-import untils.db_multi as dbM
+import backend.untils.db_untils as dbM
 from untils.parser import parse
 from untils import subcription
 
@@ -230,3 +230,24 @@ async def send_push_all(title: str, body: str, queue: int):
         sent,
         tg_sent,
     )
+
+def send_notification(message: str, title: str):
+    """
+    Отправляет уведомление всем подписанным клиентам через /notify
+    """
+
+    PASS = os.getenv("NOTIFY_PASS")
+    SERVER_URL = os.getenv("NOTIFY_URL")
+
+    data = {"message": message, "title": title, "pass": PASS}
+    response = requests.post(
+        f"{SERVER_URL}/notify",
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(data)
+    )
+
+    if response.status_code == 200:
+        res = response.json()
+        print(f"Уведомление отправлено {res.get('sent', 0)} клиентам. \n{res.get('msg', '')}")
+    else:
+        print(f"Ошибка {response.status_code}: {response.text}")

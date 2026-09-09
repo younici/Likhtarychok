@@ -15,10 +15,10 @@ load_dotenv()
 
 import bots.notifier_bot.bot as notify_bot
 import bots.help_bot.bot as help_bot
-import bots.status_bot.bot as status_bot
-import bots.status_bot.untils.socket as status_socket
+# import bots.status_bot.bot as status_bot
+# import bots.status_bot.untils.socket as status_socket
 
-import bots.status_bot.untils.subs as secret_subs
+# import bots.status_bot.untils.subs as secret_subs
 
 import untils.states as states
 
@@ -41,6 +41,7 @@ log.basicConfig(
 
 BASE_PATH = "/api"
 ISDB = True
+
 DB_ONLINE = os.getenv("DB_ONLINE") == "true"
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
 ONLINE = os.getenv("ONLINE", "false").lower() == "true"
@@ -67,9 +68,9 @@ async def lifespan(app: FastAPI):
     if DB_ONLINE:
         try:
             await db.init_db()
-            subs = await db.get_all_secret_subs()
-            secret_subs.set_subs(subs)
-            log.info(f"Loaded secret subs from DB: {subs}")
+            # subs = await db.get_all_secret_subs()
+            # secret_subs.set_subs(subs)
+            # log.info(f"Loaded secret subs from DB: {subs}")
         except Exception as exc:
             log.warning(f"init_db() failed: {exc}")
             db.disable_db()
@@ -86,24 +87,24 @@ async def lifespan(app: FastAPI):
 
     tasks = [
         notify_bot.start_bot,
-        help_bot.start_bot,
-        status_bot.start_bot
+        help_bot.start_bot
+        # status_bot.start_bot
     ]
 
     app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
-    app.state.bg_tasks.append(asyncio.create_task(status_socket.main(redis_client)))
+    # app.state.bg_tasks.append(asyncio.create_task(status_socket.main(redis_client)))
 
     yield
 
     states.closing = True
 
-    await status_socket.save_all(redis_client)
+    # await status_socket.save_all(redis_client)
 
-    if DB_ONLINE:
-        subs = secret_subs.get_subs()
-        log.info("Saving secret subs to DB...")
-        log.info(f"secret subs to save: {subs}")
-        await db.save_all_secret_subs(subs)
+    # if DB_ONLINE:
+        # subs = secret_subs.get_subs()
+        # log.info("Saving secret subs to DB...")
+        # log.info(f"secret subs to save: {subs}")
+        # await db.save_all_secret_subs(subs)
 
     for task in app.state.bg_tasks:
         task.cancel()

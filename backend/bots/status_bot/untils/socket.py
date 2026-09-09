@@ -1,21 +1,26 @@
 import untils.states as states
-import untils.redis_db as redis_un
 
-import time, redis, asyncio, websockets, logging
+import time
+import redis
+import asyncio
+import websockets
+import logging
 
 _log = logging.getLogger(__name__)
 
-_redis: redis.Redis | None = None
-_status = False
-_start: float = 0
+DEBOUNCE_ON_SEC = 30
+DEBOUNCE_OFF_SEC = 30
 
-_last_con_time: float = 0
-_last_con_duration: float = 0
+_status: bool = False
+_start: float = 0    
+
+_last_con_time: float = 0 
+_last_con_duration: float = 0 
+
 _last_on_trigger: float = 0
 _last_off_trigger: float = 0
 
-DEBOUNCE_ON_SEC = 30
-DEBOUNCE_OFF_SEC = 30
+_light_off_since: float = 0  
 
 async def handle_connection(websocket):
     _log.info("New WebSocket connection established")
@@ -23,19 +28,19 @@ async def handle_connection(websocket):
     global _status, _start
     global _last_con_duration, _last_con_time
     global _last_on_trigger, _last_off_trigger
+    global _light_off_since
 
     now = time.time()
 
-    if _start == 0:
-        _start = now
-
-    # ===== DEBOUNCE ON =====
     try:
         if Light_Events.on and not _status:
             if now - _last_on_trigger >= DEBOUNCE_ON_SEC:
                 _log.info("Triggering light ON event")
                 _last_on_trigger = now
+
                 _status = True
+                _start = now
+
                 await Light_Events.on()
             else:
                 _log.debug("ON ignored (debounce)")
@@ -44,28 +49,30 @@ async def handle_connection(websocket):
 
     try:
         await websocket.wait_closed()
+
     finally:
         if not states.closing:
             now = time.time()
 
-            # ===== DEBOUNCE OFF =====
             try:
                 if Light_Events.off and _status:
                     if now - _last_off_trigger >= DEBOUNCE_OFF_SEC:
-                        _last_con_duration = get_connection_time()
-                        _last_con_time = now
-
                         _log.info("Triggering light OFF event")
                         _last_off_trigger = now
 
+                        _last_con_duration = get_connection_time()
+                        _last_con_time = now
+                        _light_off_since = now
+
                         await Light_Events.off()
 
-                        _start = 0
                         _status = False
+                        _start = 0
                     else:
                         _log.debug("OFF ignored (debounce)")
             except Exception as e:
                 _log.error(f"Error executing Light_Events.off: {e}")
+
 
 def get_status() -> bool:
     return _status
@@ -81,63 +88,58 @@ def get_last_con_duration() -> float:
 def get_last_con_time() -> float:
     return _last_con_time
 
+def get_light_off_duration() -> int:
+    if _light_off_since == 0:
+        return 0
+    return int(time.time() - _light_off_since)
+
 async def save_all(redis_client: redis.Redis | None = None):
-    if redis_client:
-        await redis_client.set("socket_start_time", str(_start))
-        await redis_client.set("light_status", str(int(_status)))
-        await redis_client.set("last_connection_time", str(int(_last_con_time)))
-        await redis_client.set("last_connection_duration", str(int(_last_con_duration)))
+    if not redis_client:
+        return
+
+    await redis_client.set("light_status", int(_status))
+    await redis_client.set("socket_start_time", _start)
+    await redis_client.set("last_connection_time", _last_con_time)
+    await redis_client.set("last_connection_duration", _last_con_duration)
+    await redis_client.set("light_off_since", _light_off_since)
 
 async def load_all(redis_client: redis.Redis | None = None):
-    global _redis
-    global _status
-    global _start
-    global _last_con_time
-    global _last_con_duration
+    global _status, _start
+    global _last_con_time, _last_con_duration
+    global _light_off_since
 
-    if redis_client:
-        status = await redis_client.get("light_status")
-        if status is not None:
-            _status = bool(int(status))
-        else:
-            _status = False
-        start = await redis_client.get("socket_start_time")
-        if start is not None:
-            _start = float(start)
+    if not redis_client:
+        return
 
-    if redis_client:
-        status = await redis_client.get("light_status")
-        if status is not None:
-            _status = bool(int(status))
-        else:
-            _status = False
-        start = await redis_client.get("socket_start_time")
-        if start is not None:
-            _start = float(start)
-        last_time = await redis_client.get("last_connection_time")
-        if last_time is not None:
-            _last_con_time = float(last_time)
-        else:
-            _last_con_time = 0
-        last_duration = await redis_client.get("last_connection_duration")
-        if last_duration is not None:
-            _last_con_duration = float(last_duration)
-        else:
-            _last_con_duration = 0
+    def _get_float(key: str) -> float:
+        val = redis_client.get(key)
+        return float(val) if val else 0
+
+    def _get_bool(key: str) -> bool:
+        val = redis_client.get(key)
+        return bool(int(val)) if val else False
+
+    _status = await _get_bool("light_status")
+    _start = await _get_float("socket_start_time")
+    _last_con_time = await _get_float("last_connection_time")
+    _last_con_duration = await _get_float("last_connection_duration")
+    _light_off_since = await _get_float("light_off_since")
+
 
 async def main(redis_client: redis.Redis | None = None):
     await asyncio.sleep(0)
     _log.info("Starting WebSocket server on ws://0.0.0.0:8338")
 
     await load_all(redis_client)
+
     async with websockets.serve(
-        handle_connection, 
-        "0.0.0.0", 8338, 
+        handle_connection,
+        "0.0.0.0",
+        8338,
         ping_interval=5,
         ping_timeout=20
     ):
         await asyncio.Future()
-
-class Light_Events():
+class Light_Events:
     on = None
     off = None
