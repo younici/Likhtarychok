@@ -47,10 +47,10 @@ async def get_status(queue, bias):
         
         if row_index >= len(table):
             log.error(f"Row index {row_index} out of range")
-            return None
+            return [0] * 12
 
         cells = table[row_index].select("td")[bias:]
         return "".join(str(td) for td in cells)
     except Exception as e:
         log.error(f"Parsing error: {e}")
-        return None
+        return [0] * 12

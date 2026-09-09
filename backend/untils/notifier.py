@@ -4,14 +4,15 @@ import logging
 from datetime import datetime
 
 from pywebpush import webpush, WebPushException
+import requests
 
-import backend.untils.db_untils as dbM
+import untils.db_untils as dbM
 from untils.parser import parse
 from untils import subcription
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
-BOT_ONLINE = os.getenv("BOT_ONLINE", "false").lower() == "true"
+NOTIFY_BOT_ONLINE = os.getenv("NOTIFY_BOT_ONLINE", "false").lower() == "true"
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,8 @@ async def save_all_to_redis():
     await subcription.save_all_to_redis()
 
 async def _send_telegram_notifications(text: str, queue: int | None = None):
-    if not BOT_ONLINE:
+    if not NOTIFY_BOT_ONLINE:
+        log.info(f"\nbot online: {NOTIFY_BOT_ONLINE}\n")
         return 0, []
 
     try:
@@ -74,11 +76,13 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
         return 0, [str(exc)]
 
     tg_subs = subcription.get_telegram_subs(queue)
+    log.info(f"tg subs: {tg_subs}")
     sent = 0
     errors: list[str] = []
 
     for sub in tg_subs:
         tg_id = (sub or {}).get("id") or (sub or {}).get("tg_id")
+        log.info(f"tg id: {tg_id}")
         if tg_id is None:
             continue
         try:
@@ -88,7 +92,7 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
             log.warning("Telegram notify failed for %s: %s", tg_id, exc)
             await dbM.notify_delete_tg_sub(tg_id)
             errors.append(f"{tg_id}: {exc}")
-
+    log.info(f"sent: {sent}\n errors: {errors}")
     return sent, errors
 
 async def notify_all(title: str, message: str):
@@ -134,12 +138,19 @@ async def check_and_notify():
         now = datetime.now()
         _cleanup_notified(now.date())
 
-        for queue_code, queue_subs in list(subcription.push_subscriptions.items()):
-            if not queue_subs:
+        all_queues = set(subcription.push_subscriptions.keys()) | {1, 2, 3, 4, 5, 6}
+
+        for queue_code in all_queues:
+            has_push = bool(subcription.push_subscriptions.get(queue_code))
+            has_tg = bool(subcription.get_telegram_subs(queue_code))
+
+            if not has_push and not has_tg:
+                log.info(f"has_puh: {has_push}\nhas_tg: {has_tg}")
                 continue
 
             try:
                 status = await parse_status_for_queue(queue_code)
+                log.info(f"status: {status}")
             except Exception as parse_err:
                 log.error("Failed to parse queue %s: %s", queue_code, parse_err)
                 continue

@@ -161,26 +161,6 @@
   gap: 1rem;
 }
 
-.widgetCard {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  max-height: 13rem;
-}
-
-.widgetBtn {
-  margin-top: 1rem;
-  width: 100%;
-  color: var(--text-contrast);
-}
-
-.widgetHero {
-  font-size: large;
-  font-weight: 800;
-  color: var(--text-primary);
-}
-
-.widgetCard,
 .actionCard,
 .noteCard {
   border: var(--stroke);
@@ -424,7 +404,6 @@
 }
 
 @media (max-width: 640px) {
-  .widgetCard,
   .hero,
   .actionCard,
   .noteCard,

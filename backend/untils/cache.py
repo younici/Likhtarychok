@@ -70,7 +70,7 @@ async def cache_loop():
             
             if status is None:
                 log.warning(f"Got None for queue index {queue}")
-                new_cache.append("") 
+                new_cache.append("")
             else:
                 new_cache.append(status)
                 

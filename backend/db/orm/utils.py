@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import inspect, select, text
 
 from db.orm.base import Base
-from db.orm.models import Subscription, SupportAdmin, SupportBan, SupportTicket, SupportTicketMessage, TgSub, Subs
+from db.orm.models import Subscription, SupportAdmin, SupportBan, SupportTicket, SupportTicketMessage, TgSub
 from db.orm.session import AsyncSessionLocal, db_available, engine
 
 log = logging.getLogger(__name__)
