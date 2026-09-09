@@ -212,8 +212,6 @@ The backend ships with `backend/.env.example` containing the complete configurat
 | `HELP_BOT_TOKEN` | Telegram help bot token |
 | `HELP_BASE_ADMIN_ID` | Base administrator Telegram ID |
 | `HELP_BOT_ONLINE` | Enable the help bot |
-| `STATUS_BOT_TOKEN` | Telegram status bot token |
-| `STATUS_BOT_ONLINE` | Enable the status bot |
 | `BOT_ADMINS` | Comma-separated Telegram administrator IDs |
 | `CAN_CACHE` | Enable schedule caching |
 
@@ -244,9 +242,6 @@ NOTIFY_BOT_ONLINE=true
 HELP_BOT_TOKEN=123456:your_token
 HELP_BASE_ADMIN_ID=123456789
 HELP_BOT_ONLINE=true
-
-STATUS_BOT_TOKEN=123456:your_token
-STATUS_BOT_ONLINE=true
 
 BOT_ADMINS=123456789,987654321
 CAN_CACHE=true
