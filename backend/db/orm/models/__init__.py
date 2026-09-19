@@ -11,5 +11,4 @@ __all__ = [
     "SupportBan",
     "SupportTicket",
     "SupportTicketMessage",
-    "Subs"
 ]
