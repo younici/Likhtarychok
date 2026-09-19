@@ -7,7 +7,6 @@ import Home from "./pages/Home/Home.jsx";
 import Info from "./pages/Info/Info.jsx";
 import Faq from "./pages/Faq/Faq.jsx";
 import Privacy from "./pages/Privacy/Privacy.jsx";
-import Widget from "./pages/Widget/Widget.jsx";
 import { AdsConsentProvider } from "./context/AdsConsentContext.jsx";
 
 import "./styles/reset.css";
@@ -25,7 +24,6 @@ createRoot(document.getElementById("root")).render(
             <Route path="/info" element={<Info />} />
             <Route path="/faq" element={<Faq />} />
             <Route path="/privacy" element={<Privacy />} />
-            <Route path="/widget" element={<Widget />}/>
             <Route path="*" element={<Home />} />
           </Route>
         </Routes>
