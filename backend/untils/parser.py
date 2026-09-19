@@ -33,21 +33,24 @@ async def parse(queue: int):
 
     html = BeautifulSoup(text, "html.parser")
 
-    for i in html:
-        style = i.get("style", "")
-        color = None
+    try:
+        for i in html:
+            style = i.get("style", "")
+            color = None
 
-        for part in style.split(";"):
-            part = part.strip()
-            if part.startswith("background"):
-                color = part.split(":", 1)[1].strip()
-                break
+            for part in style.split(";"):
+                part = part.strip()
+                if part.startswith("background"):
+                    color = part.split(":", 1)[1].strip()
+                    break
 
-        colors.append(color)
+            colors.append(color)
 
-    for c in colors:
-        if c == "#ffffff":
-            status.append(0)
-        else:
-            status.append(1)
-    return status
+        for c in colors:
+            if c == "#ffffff":
+                status.append(0)
+            else:
+                status.append(1)
+        return status
+    except Exception as e:
+        return [0] * 12
