@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 import logging
 
-import backend.untils.db_untils as dbM
+import untils.db_untils as dbM
 import db.orm.utils as db
 import untils.redis_db as redisdb
 from untils import subcription, tools, variebles
