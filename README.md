@@ -97,14 +97,13 @@ Likhtarychok/
     │   │   ├── Graph/
     │   │   ├── Home/
     │   │   ├── Info/
-    │   │   ├── Privacy/
-    │   │   └── Stats/
+    │   │   └── Privacy/
     │   └── main.jsx
     ├── package.json
     └── vite.config.js
 ```
 
-The backend is started by Uvicorn on port `8000` in the included Dockerfile. The frontend is a standard Vite application with React Router and is currently organized into home, graph, information, FAQ, privacy, and widget/stat-related pages.
+The backend is started by Uvicorn on port `8000` in the included Dockerfile. The frontend is a standard Vite application with React Router and is currently organized into home, graph, information, FAQ, and privacy pages.
 
 ## Technology stack
 
