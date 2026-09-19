@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pywebpush import webpush, WebPushException
 
-import backend.untils.db_untils as dbM
+import untils.db_untils as dbM
 from untils.parser import parse
 from untils import subcription
 
