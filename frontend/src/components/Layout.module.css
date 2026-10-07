@@ -55,14 +55,6 @@
   box-shadow: 0 0 30px rgba(255, 202, 107, 0.15);
 }
 
-.logoMark span {
-  width: 12px;
-  height: 24px;
-  background: linear-gradient(180deg, #ffca6b, #ff9d42);
-  border-radius: 12px 12px 6px 6px;
-  box-shadow: inset 0 -4px 12px rgba(0, 0, 0, 0.35);
-}
-
 .logoMarkSmall {
   width: 36px;
   height: 36px;

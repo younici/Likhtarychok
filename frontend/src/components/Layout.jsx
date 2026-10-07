@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import FlashlightIcon from "./FlashlightIcon.jsx";
 import styles from "./Layout.module.css";
 
 const navLinks = [
@@ -16,7 +17,7 @@ function Layout() {
       <header className={styles.header}>
         <NavLink to="/" className={styles.brand}>
           <div className={styles.logoMark}>
-            <span />
+            <FlashlightIcon size={26} />
           </div>
           <div className={styles.brandText}>
             <p className={styles.logoTitle}>Likhtarychok</p>
@@ -60,7 +61,9 @@ function Layout() {
 
       <footer className={styles.footer}>
         <div>
-          <div className={styles.logoMarkSmall} aria-hidden />
+          <div className={styles.logoMarkSmall} aria-hidden>
+            <FlashlightIcon size={20} />
+          </div>
           <p className={styles.footerTitle}>Likhtarychok</p>
           <p className={styles.footerCopy}>
             Онлайн-гід по стабілізаційних відключеннях з push-сповіщеннями.
