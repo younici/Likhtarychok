@@ -7,7 +7,7 @@ import Home from "./pages/Home/Home.jsx";
 import Info from "./pages/Info/Info.jsx";
 import Faq from "./pages/Faq/Faq.jsx";
 import Privacy from "./pages/Privacy/Privacy.jsx";
-import { AdsConsentProvider } from "./context/AdsConsentContext.jsx";
+import Donate from "./pages/Donate/Donate.jsx";
 
 import "./styles/reset.css";
 import "./styles/theme.css";
@@ -16,18 +16,17 @@ import "./styles/globals.css";
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <BrowserRouter>
-      <AdsConsentProvider>
-        <Routes>
-          <Route element={<Layout />}>
-            <Route path="/" element={<Home />} />
-            <Route path="/graph" element={<Graph />} />
-            <Route path="/info" element={<Info />} />
-            <Route path="/faq" element={<Faq />} />
-            <Route path="/privacy" element={<Privacy />} />
-            <Route path="*" element={<Home />} />
-          </Route>
-        </Routes>
-      </AdsConsentProvider>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<Home />} />
+          <Route path="/graph" element={<Graph />} />
+          <Route path="/info" element={<Info />} />
+          <Route path="/faq" element={<Faq />} />
+          <Route path="/privacy" element={<Privacy />} />
+          <Route path="/donate" element={<Donate />} />
+          <Route path="*" element={<Home />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   </StrictMode>
 );

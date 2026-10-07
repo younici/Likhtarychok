@@ -1,9 +1,6 @@
 import { Link } from "react-router-dom";
-import AdSlot from "../../components/AdSlot.jsx";
-import { useAdsConsent } from "../../context/AdsConsentContext.jsx";
 import styles from "./Home.module.css";
 
-const homeAdSlot = import.meta.env.VITE_ADSENSE_SLOT_HOME;
 
 const highlights = [
   {
@@ -40,8 +37,6 @@ const steps = [
 ];
 
 function Home() {
-  const { consent } = useAdsConsent();
-  const adsEnabled = consent === "granted";
 
   return (
     <div className={styles.page}>
@@ -95,7 +90,6 @@ function Home() {
         </div>
       </section>
 
-      <AdSlot slot={homeAdSlot} enabled={adsEnabled} />
 
       <section className={styles.highlights}>
         {highlights.map((item) => (
