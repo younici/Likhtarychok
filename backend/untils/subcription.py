@@ -307,16 +307,21 @@ async def load_subscriptions_from_storage(force_db: bool = False):
             log.warning("Failed to load subscriptions from Redis, disabling cache: %s", exc)
             _redis_client = None
 
-    if loaded:
-        return
+    if loaded and (push_subscriptions or telegram_subscriptions):
+        # Redis may have been wiped while the DB still has subscribers
+        if telegram_subscriptions and push_subscriptions:
+            return
+        log.info("Redis has incomplete subscriptions, filling the gaps from DB.")
+    else:
+        log.info("Loading subscriptions from DB (Redis unavailable, empty or force_db=True).")
 
-    log.info("Loading subscriptions from DB (Redis unavailable or force_db=True).")
+    if not push_subscriptions:
+        db_subs = await db.get_all_http_sub()
+        replace_push_subscriptions(db_subs or [])
 
-    db_subs = await db.get_all_http_sub()
-    replace_push_subscriptions(db_subs or [])
-
-    tg_db_subs = await db.get_all_tg_subscribers()
-    replace_telegram_subscriptions([{"id": sub.tg_id, "queue": sub.queue_id} for sub in tg_db_subs or []])
+    if not telegram_subscriptions:
+        tg_db_subs = await db.get_all_tg_subscribers()
+        replace_telegram_subscriptions([{"id": sub.tg_id, "queue": sub.queue_id} for sub in tg_db_subs or []])
 
     if _redis_client:
         await save_all_to_redis()

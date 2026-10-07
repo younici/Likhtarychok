@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import logging
@@ -9,6 +10,7 @@ import requests
 import untils.db_untils as dbM
 from untils.parser import parse
 from untils import subcription
+from untils.variebles import QUEUE_LABELS
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
@@ -75,24 +77,45 @@ async def _send_telegram_notifications(text: str, queue: int | None = None):
         log.warning("Telegram notifier unavailable: %s", exc)
         return 0, [str(exc)]
 
-    tg_subs = subcription.get_telegram_subs(queue)
-    log.info(f"tg subs: {tg_subs}")
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+
+    tg_subs = list(subcription.get_telegram_subs(queue))
+    log.info("tg subs for queue %s: %s", queue, tg_subs)
     sent = 0
     errors: list[str] = []
 
     for sub in tg_subs:
         tg_id = (sub or {}).get("id") or (sub or {}).get("tg_id")
-        log.info(f"tg id: {tg_id}")
         if tg_id is None:
             continue
-        try:
-            await send_notify(int(tg_id), text)
-            sent += 1
-        except Exception as exc:
-            log.warning("Telegram notify failed for %s: %s", tg_id, exc)
-            await dbM.notify_delete_tg_sub(tg_id)
-            errors.append(f"{tg_id}: {exc}")
-    log.info(f"sent: {sent}\n errors: {errors}")
+
+        for attempt in range(2):
+            try:
+                await send_notify(int(tg_id), text)
+                sent += 1
+                break
+            except TelegramRetryAfter as exc:
+                if attempt == 0:
+                    await asyncio.sleep(exc.retry_after + 1)
+                    continue
+                errors.append(f"{tg_id}: {exc}")
+            except TelegramForbiddenError as exc:
+                # user blocked the bot / deleted the chat - subscription is dead
+                log.warning("Telegram user %s unreachable, removing sub: %s", tg_id, exc)
+                await dbM.notify_delete_tg_sub(tg_id)
+                errors.append(f"{tg_id}: {exc}")
+            except TelegramBadRequest as exc:
+                if "chat not found" in str(exc).lower():
+                    await dbM.notify_delete_tg_sub(tg_id)
+                log.warning("Telegram notify failed for %s: %s", tg_id, exc)
+                errors.append(f"{tg_id}: {exc}")
+            except Exception as exc:
+                # transient error (network etc.) - keep the subscription
+                log.warning("Telegram notify failed for %s: %s", tg_id, exc)
+                errors.append(f"{tg_id}: {exc}")
+            break
+
+    log.info("tg sent: %s, errors: %s", sent, errors)
     return sent, errors
 
 async def notify_all(title: str, message: str):
@@ -138,14 +161,11 @@ async def check_and_notify():
         now = datetime.now()
         _cleanup_notified(now.date())
 
-        all_queues = set(subcription.push_subscriptions.keys()) | {1, 2, 3, 4, 5, 6}
-
-        for queue_code in all_queues:
+        for queue_code in QUEUE_LABELS:
             has_push = bool(subcription.push_subscriptions.get(queue_code))
-            has_tg = bool(subcription.get_telegram_subs(queue_code))
+            has_tg = bool(subcription.telegram_subscriptions.get(queue_code))
 
             if not has_push and not has_tg:
-                log.info(f"has_puh: {has_push}\nhas_tg: {has_tg}")
                 continue
 
             try:

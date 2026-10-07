@@ -64,18 +64,23 @@ async def cache_loop():
     new_cache = []
     
     try:
-        for queue, bias in zip(_all_index, _all_bias):
+        failed = 0
+        for pos, (queue, bias) in enumerate(zip(_all_index, _all_bias)):
             log.info(f"getting cache for queue_idx: {queue} (bias: {bias})")
             status = await tools.get_status(queue, bias)
             
             if status is None:
-                log.warning(f"Got None for queue index {queue}")
-                new_cache.append("")
+                log.warning(f"Got None for queue index {queue}, keeping old value")
+                failed += 1
+                old = _cache_queue[pos] if pos < len(_cache_queue) else ""
+                new_cache.append(old)
             else:
                 new_cache.append(status)
                 
             await asyncio.sleep(1)
-        if new_cache and len(new_cache) == len(_all_index):
+        if failed == len(_all_index):
+            log.warning("All fetches failed, cache left untouched")
+        elif new_cache and len(new_cache) == len(_all_index):
             _cache_queue = new_cache
             await _save_cache_to_redis(_cache_queue)
         else:

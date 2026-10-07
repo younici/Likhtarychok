@@ -10,6 +10,5 @@ send telegram notify id - telegram id of user, msg - message for notify
 async def send_notify(id: int, msg: str):
     bot = get_bot()
     if bot is None:
-        log.warning("Bot is not initializated")
-        return
+        raise RuntimeError("Bot is not initializated")
     await bot.send_message(id, msg)
