@@ -2,9 +2,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import styles from "./Graph.module.css";
+import { fetchStatusFromZtoe, queueOptions, readCachedStatus } from "../../lib/ztoe";
 
 
-const queueOptions = ["11", "12", "21", "22", "31", "32", "41", "42", "51", "52", "61", "62"];
 const defaultStatuses = Array(48).fill(false);
 
 const apiBase =
@@ -129,6 +129,38 @@ async function fetchStatusGrpc(queue) {
   const messageBytes = unwrapGrpcWebMessage(buffer);
   return decodeStatusResponse(messageBytes);
 }
+
+/*
+ * Роутер джерел даних: спершу API-сервер, далі — клієнтський парсинг сайту ЖОЕ,
+ * і як остання лінія — збережений сьогоднішній графік з localStorage.
+ */
+async function loadQueueStatus(queue) {
+  try {
+    const data = await fetchStatusGrpc(queue);
+    if (data.length > 0) return { data, source: "api" };
+  } catch (_) {
+    /* падаємо на наступне джерело */
+  }
+
+  try {
+    const data = await fetchStatusFromZtoe(queue);
+    if (data?.length) return { data, source: "ztoe" };
+  } catch (_) {
+    /* падаємо на наступне джерело */
+  }
+
+  const cached = readCachedStatus(queue);
+  if (cached?.length) return { data: cached, source: "cache" };
+
+  return { data: [], source: "none" };
+}
+
+const sourceLabels = {
+  api: "Дані з нашого сервера",
+  ztoe: "Дані напряму з сайту ЖОЕ",
+  cache: "Збережена копія графіка",
+  none: "Немає з'єднання з джерелами",
+};
 
 const timeSlots = [
   "00:00–01:00",
@@ -262,6 +294,7 @@ function Graph() {
   const [publicKey, setPublicKey] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [source, setSource] = useState(null);
 
   const queueLabel = `${queue[0]}.${queue[1]}`;
 
@@ -287,15 +320,17 @@ function Graph() {
   const fetchStatuses = useCallback(async (selectedQueue) => {
     setIsLoading(true);
     try {
-      const source = await fetchStatusGrpc(selectedQueue);
-      const normalized = normalizeStatuses(source);
-      setStatuses(normalized);
-      setHasData(source.length > 0);
-      setOutageRanges(source.length > 0 ? collectOutageRanges(normalized) : []);
+      const { data, source: usedSource } = await loadQueueStatus(selectedQueue);
+      const normalized = normalizeStatuses(data);
+      setStatuses(data.length > 0 ? normalized : defaultStatuses);
+      setHasData(data.length > 0);
+      setOutageRanges(data.length > 0 ? collectOutageRanges(normalized) : []);
+      setSource(usedSource);
     } catch (_) {
       setStatuses(defaultStatuses);
       setHasData(false);
       setOutageRanges([]);
+      setSource("none");
     } finally {
       setIsLoading(false);
     }
@@ -439,6 +474,7 @@ function Graph() {
             <span>Оновлення кожні 5 хв</span>
             <span>Push + Telegram</span>
             <span>Житомирська область</span>
+            {source ? <span>{sourceLabels[source]}</span> : null}
           </div>
         </div>
 
