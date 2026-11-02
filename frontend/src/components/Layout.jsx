@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import CandleIcon from "./CandleIcon.jsx";
 import styles from "./Layout.module.css";
@@ -8,12 +9,34 @@ const navLinks = [
   { to: "/faq", label: "FAQ" },
 ];
 
+const FUNDING_NOTICE_KEY = "funding-notice-dismissed";
+
 function Layout() {
   const { pathname } = useLocation();
+  const [noticeDismissed, setNoticeDismissed] = useState(
+    () => typeof window !== "undefined" && localStorage.getItem(FUNDING_NOTICE_KEY) === "1"
+  );
+
+  const dismissNotice = () => {
+    setNoticeDismissed(true);
+    localStorage.setItem(FUNDING_NOTICE_KEY, "1");
+  };
 
   return (
     <div className={styles.shell}>
       <div className={styles.ambient} aria-hidden />
+      {!noticeDismissed && (
+        <div className={styles.notice}>
+          <p>
+            Через брак фінансування проєкту сповіщення про відключення світла (push та Telegram) можуть
+            працювати нестабільно. Радимо час від часу перевіряти графік на сайті. Дякуємо за розуміння —
+            і за підтримку, якщо маєте змогу.
+          </p>
+          <button type="button" className={styles.noticeClose} onClick={dismissNotice} aria-label="Закрити">
+            ×
+          </button>
+        </div>
+      )}
       <header className={styles.header}>
         <NavLink to="/" className={styles.brand}>
           <div className={styles.logoMark}>
