@@ -10,6 +10,7 @@ import requests
 import untils.db_untils as dbM
 from untils.parser import parse
 from untils import subcription
+from untils import stats_tracker
 from untils.variebles import QUEUE_LABELS
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
@@ -153,6 +154,7 @@ async def notify_all(title: str, message: str):
             errors.append(f"{endpoint[:80]}...: {ex}")
 
     tg_sent, tg_errors = await _send_telegram_notifications(f"{title}\n{message}")
+    stats_tracker.record_push_event(web_sent=sent, tg_sent=tg_sent, title=title)
 
     return {"sent": sent, "errors": errors, "tg_sent": tg_sent, "tg_errors": tg_errors}
 
@@ -251,6 +253,7 @@ async def send_push_all(title: str, body: str, queue: int):
         except Exception as ex:
             log.warning("Push failed: %s", ex)
     tg_sent, tg_errors = await _send_telegram_notifications(f"{title}\n{body}", target_queue)
+    stats_tracker.record_push_event(web_sent=sent, tg_sent=tg_sent, title=title, queue=target_queue)
 
     if tg_errors:
         log.warning("Telegram notify errors for queue %s: %s", target_queue, tg_errors)

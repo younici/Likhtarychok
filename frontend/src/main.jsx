@@ -8,6 +8,7 @@ import Info from "./pages/Info/Info.jsx";
 import Faq from "./pages/Faq/Faq.jsx";
 import Privacy from "./pages/Privacy/Privacy.jsx";
 import Donate from "./pages/Donate/Donate.jsx";
+import AdmStats from "./pages/AdmStats/AdmStats.jsx";
 
 import "./styles/reset.css";
 import "./styles/theme.css";
@@ -24,6 +25,7 @@ createRoot(document.getElementById("root")).render(
           <Route path="/faq" element={<Faq />} />
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/donate" element={<Donate />} />
+          <Route path="/admstats" element={<AdmStats />} />
           <Route path="*" element={<Home />} />
         </Route>
       </Routes>

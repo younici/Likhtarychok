@@ -12,6 +12,9 @@ from fastapi.responses import Response
 from dotenv import load_dotenv
 
 load_dotenv()
+_backend_env = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(_backend_env):
+    load_dotenv(_backend_env)
 
 import bots.notifier_bot.bot as notify_bot
 import bots.help_bot.bot as help_bot
@@ -25,10 +28,13 @@ from untils import cache
 import db.orm.utils as db
 
 import asyncio
+import json
+import secrets
 
 import logging as log
 
 from proto import status_pb2
+from untils import stats_tracker
 
 log.basicConfig(
     level=log.INFO,
@@ -40,6 +46,7 @@ ISDB = True
 
 DB_ONLINE = os.getenv("DB_ONLINE") == "true"
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
+ADMIN_STATS_PASSWORD = os.getenv("ADMIN_STATS_PASSWORD") or NOTIFY_PASS or "admstats123"
 ONLINE = os.getenv("ONLINE", "false").lower() == "true"
 REDIS_ONLINE = os.getenv("REDIS_ONLINE", "true").lower() == "true"
 CAN_CACHE = os.getenv("CAN_CACHE", "true").lower() == "true"
@@ -184,6 +191,33 @@ async def notify(req: Request):
         return {"msg": "incorrect password"}
 
     return await notifier.notify_all(title=title, message=message)
+
+@app.post(f"{BASE_PATH}/admin/stats")
+async def get_admin_stats(req: Request):
+    password = None
+    try:
+        body = await req.json()
+        if isinstance(body, dict):
+            password = body.get("password")
+    except Exception:
+        pass
+
+    if not password:
+        password = req.headers.get("x-admin-password")
+
+    configured_pass = str(ADMIN_STATS_PASSWORD)
+    given_pass = str(password or "")
+
+    if not password or not secrets.compare_digest(given_pass, configured_pass):
+        return Response(
+            content=json.dumps({"ok": False, "error": "Неверный пароль"}),
+            status_code=401,
+            media_type="application/json",
+        )
+
+    data = await stats_tracker.get_full_stats()
+    return {"ok": True, "stats": data}
+
 
 @app.get(f"{BASE_PATH}/status")
 async def get_status(queue: str | None = None):
