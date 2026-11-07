@@ -1,18 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import styles from "./AdmStats.module.css";
 
-const rawBase = (
-  import.meta.env.API_BASE_PATH ||
-  import.meta.env.VITE_API_BASE ||
-  import.meta.env.VITE_API_BASE_PATH ||
-  ""
-).replace(/\/+$/, "");
-
-const apiBase = rawBase.endsWith("/api")
-  ? rawBase
-  : rawBase
-  ? `${rawBase}/api`
-  : "/api";
+const API_URL = "/api/admin/stats";
+const API_FALLBACK_URL = "/admin/stats";
 
 const STORAGE_KEY = "admstats_token";
 
@@ -30,11 +20,19 @@ export default function AdmStats() {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${apiBase}/admin/stats`, {
+      let res = await fetch(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: authPass }),
       });
+
+      if (res.status === 404) {
+        res = await fetch(API_FALLBACK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: authPass }),
+        });
+      }
 
       if (res.status === 401) {
         setIsAuthenticated(false);

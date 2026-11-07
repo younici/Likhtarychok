@@ -193,6 +193,11 @@ async def notify(req: Request):
     return await notifier.notify_all(title=title, message=message)
 
 @app.post(f"{BASE_PATH}/admin/stats")
+@app.post("/admin/stats")
+@app.post(f"{BASE_PATH}/stats")
+@app.post("/stats")
+@app.get(f"{BASE_PATH}/admin/stats")
+@app.get("/admin/stats")
 async def get_admin_stats(req: Request):
     password = None
     try:
