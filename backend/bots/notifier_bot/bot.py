@@ -8,11 +8,24 @@ BOT_TOKEN = os.getenv("NOTIFY_BOT_TOKEN")
 BOT_ONLINE = os.getenv("NOTIFY_BOT_ONLINE") == "true"
 
 dp = Dispatcher()
-bot = Bot(BOT_TOKEN)
+bot: Bot | None = None
+
+if BOT_ONLINE and BOT_TOKEN:
+    try:
+        bot = Bot(BOT_TOKEN)
+    except Exception:
+        bot = None
 
 async def start_bot():
     if not BOT_ONLINE or not BOT_TOKEN:
         return
+    
+    global bot
+    if bot is None:
+        try:
+            bot = Bot(BOT_TOKEN)
+        except Exception:
+            return
     
     dp.include_routers(queue.router, start.router)
     await dp.start_polling(bot)

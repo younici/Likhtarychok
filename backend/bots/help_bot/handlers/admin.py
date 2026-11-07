@@ -9,7 +9,11 @@ from aiogram.types import Message
 import db.orm.utils as db
 
 router = Router()
-BASE_ADMIN_ID = int(getenv("HELP_BASE_ADMIN_ID", "0") or 0)
+_raw_base_admin = getenv("HELP_BASE_ADMIN_ID", "0") or "0"
+try:
+    BASE_ADMIN_ID = int(_raw_base_admin)
+except (ValueError, TypeError):
+    BASE_ADMIN_ID = 0
 
 
 def _require_admin(func):

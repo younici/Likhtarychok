@@ -11,7 +11,11 @@ from db.orm.session import AsyncSessionLocal, db_available, engine
 
 log = logging.getLogger(__name__)
 
-PRIMARY_SUPPORT_ADMIN = int(os.getenv("HELP_BASE_ADMIN_ID", "0") or 0)
+_raw_admin_id = os.getenv("HELP_BASE_ADMIN_ID", "0") or "0"
+try:
+    PRIMARY_SUPPORT_ADMIN = int(_raw_admin_id)
+except (ValueError, TypeError):
+    PRIMARY_SUPPORT_ADMIN = 0
 
 
 async def init_db():
