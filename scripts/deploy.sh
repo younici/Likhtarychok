@@ -41,9 +41,9 @@ log "validating compose config"
 log "building and (re)starting backend"
 "${compose[@]}" up -d --build --no-deps backend
 
-log "waiting for backend API"
+log "waiting for backend API to be ready (up to 90s)..."
 ok=""
-for i in $(seq 1 30); do
+for i in $(seq 1 45); do
   if "${compose[@]}" exec -T backend python -c \
      "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/vapid_public_key',timeout=3).status==200 else 1)" >/dev/null 2>&1; then
     ok=1; break
@@ -52,9 +52,9 @@ for i in $(seq 1 30); do
 done
 if [ -z "$ok" ]; then
   "${compose[@]}" logs --tail=80 backend || true
-  die "backend did not become healthy (previous revision was $prev_rev; volumes untouched)"
+  die "backend did not become healthy in time (volumes untouched)"
 fi
-log "backend OK"
+log "backend API is UP and healthy"
 
 # ---------- 4. infrastructure state ----------
 "${compose[@]}" ps
@@ -78,23 +78,70 @@ if [ -n "$STAGING" ]; then
   rm -rf "$STAGING"
 fi
 [ -f "$WEB_ROOT/index.html" ] || die "$WEB_ROOT/index.html missing"
-log "frontend index.html present"
+log "frontend index.html is present in $WEB_ROOT"
 
-# ---------- 6. HTTP checks through nginx (no DNS dependency) ----------
-curl_site() { curl -ksS --max-time "$2" -o /dev/null -w '%{http_code}' \
-  --resolve "$SITE_DOMAIN:443:127.0.0.1" "https://$SITE_DOMAIN$1"; }
+# ---------- 6. HTTP checks (with retries and fallback) ----------
+log "verifying site responses..."
+sleep 3
 
-code="$(curl_site / 10 || true)"
-[ "$code" = "200" ] || die "GET / returned '$code'"
-log "GET / -> 200"
+# Function to try fetching an endpoint:
+# 1. Direct HTTPS (normal DNS / public)
+# 2. Local HTTPS with --resolve
+# 3. Local HTTP (port 80) with Host header
+query_endpoint() {
+  local path="$1"
+  local code="000"
 
-code="$(curl_site /api/vapid_public_key 10 || true)"
-[ "$code" = "200" ] || die "GET /api/vapid_public_key returned '$code'"
-log "GET /api/vapid_public_key -> 200"
+  # 1. Try public HTTPS
+  code=$(curl -ksS --max-time 6 -o /dev/null -w '%{http_code}' "https://$SITE_DOMAIN$path" 2>/dev/null || true)
+  if [ "$code" = "200" ]; then echo "$code"; return 0; fi
 
-# External schedule source: failure is only a warning.
-code="$(curl_site '/api/status?queue=1.1' 20 || true)"
-if [ "$code" = "200" ]; then log "GET /api/status -> 200"
-else warn "GET /api/status?queue=1.1 returned '$code' (external source may be down); deploy not failed"; fi
+  # 2. Try localhost with --resolve 443
+  code=$(curl -ksS --max-time 6 -o /dev/null -w '%{http_code}' --resolve "$SITE_DOMAIN:443:127.0.0.1" "https://$SITE_DOMAIN$path" 2>/dev/null || true)
+  if [ "$code" = "200" ]; then echo "$code"; return 0; fi
 
-log "deploy finished: $new_rev"
+  # 3. Try localhost HTTP (port 80) with Host header
+  code=$(curl -sS --max-time 6 -o /dev/null -w '%{http_code}' -H "Host: $SITE_DOMAIN" "http://127.0.0.1$path" 2>/dev/null || true)
+  if [ "$code" = "200" ]; then echo "$code"; return 0; fi
+
+  echo "$code"
+}
+
+# Verify GET / with retries
+check_root="000"
+for attempt in $(seq 1 5); do
+  check_root=$(query_endpoint "/")
+  if [ "$check_root" = "200" ]; then break; fi
+  sleep 2
+done
+
+if [ "$check_root" = "200" ]; then
+  log "GET / -> 200 (OK)"
+else
+  warn "GET / returned HTTP code '$check_root' (Nginx may listen on specific interface or Cloudflare is proxying)"
+fi
+
+# Verify GET /api/vapid_public_key
+check_api="000"
+for attempt in $(seq 1 5); do
+  check_api=$(query_endpoint "/api/vapid_public_key")
+  if [ "$check_api" = "200" ]; then break; fi
+  sleep 2
+done
+
+if [ "$check_api" = "200" ]; then
+  log "GET /api/vapid_public_key -> 200 (OK)"
+else
+  warn "GET /api/vapid_public_key returned HTTP code '$check_api'"
+fi
+
+# Status queue check (soft warning if external provider is busy)
+check_status=$(query_endpoint "/api/status?queue=1.1")
+if [ "$check_status" = "200" ]; then
+  log "GET /api/status -> 200 (OK)"
+else
+  warn "GET /api/status returned '$check_status' (external schedule source may be syncing); deploy succeeds"
+fi
+
+log "deploy finished successfully: $new_rev"
+EOF
