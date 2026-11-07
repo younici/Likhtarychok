@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from untils import subcription
+from untils.variebles import QUEUE_LABELS
 import untils.redis_db as redis_un
 import db.orm.utils as db_utils
 from db.orm.session import AsyncSessionLocal
@@ -14,33 +15,74 @@ from sqlalchemy import select, func
 
 log = logging.getLogger(__name__)
 
-STATS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "push_stats.json")
+STATS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+PUSH_STATS_FILE = os.path.join(STATS_DIR, "push_stats.json")
+GRAPH_STATS_FILE = os.path.join(STATS_DIR, "graph_stats.json")
 
 _push_events: list[dict[str, Any]] = []
 
+# Graph requests in-memory counters & recent requests timestamps
+_graph_stats: dict[str, Any] = {
+    "total": 0,
+    "by_queue": {str(k): 0 for k in QUEUE_LABELS.keys()},
+    "daily": {},  # { "YYYY-MM-DD": { "total": int, "by_queue": { "11": int, ... } } }
+}
+_graph_recent_timestamps: list[float] = []
+
+
 def _load_persisted_events():
-    global _push_events
+    global _push_events, _graph_stats
     try:
-        if os.path.exists(STATS_FILE):
-            with open(STATS_FILE, "r", encoding="utf-8") as f:
+        if os.path.exists(PUSH_STATS_FILE):
+            with open(PUSH_STATS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
                     _push_events = data
-                    log.info("Loaded %d push events from %s", len(_push_events), STATS_FILE)
+                    log.info("Loaded %d push events from %s", len(_push_events), PUSH_STATS_FILE)
     except Exception as e:
         log.warning("Could not load push stats file: %s", e)
 
-def _save_persisted_events():
     try:
-        os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
-        # Keep last 500 events
+        if os.path.exists(GRAPH_STATS_FILE):
+            with open(GRAPH_STATS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    _graph_stats["total"] = data.get("total", 0)
+                    loaded_bq = data.get("by_queue", {})
+                    for k in QUEUE_LABELS.keys():
+                        _graph_stats["by_queue"][str(k)] = loaded_bq.get(str(k), 0)
+                    _graph_stats["daily"] = data.get("daily", {})
+                    log.info("Loaded graph stats from %s (total: %d)", GRAPH_STATS_FILE, _graph_stats["total"])
+    except Exception as e:
+        log.warning("Could not load graph stats file: %s", e)
+
+
+def _save_push_events():
+    try:
+        os.makedirs(STATS_DIR, exist_ok=True)
         to_save = _push_events[-500:]
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
+        with open(PUSH_STATS_FILE, "w", encoding="utf-8") as f:
             json.dump(to_save, f, ensure_ascii=False, indent=2)
     except Exception as e:
         log.warning("Could not save push stats file: %s", e)
 
-# Initial load
+
+def _save_graph_stats():
+    try:
+        os.makedirs(STATS_DIR, exist_ok=True)
+        # Keep only the last 30 days in daily
+        days = sorted(_graph_stats.get("daily", {}).keys())
+        if len(days) > 30:
+            for old_day in days[:-30]:
+                _graph_stats["daily"].pop(old_day, None)
+
+        with open(GRAPH_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_graph_stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log.warning("Could not save graph stats file: %s", e)
+
+
+# Initial load on import
 _load_persisted_events()
 
 
@@ -63,7 +105,7 @@ def record_push_event(web_sent: int, tg_sent: int, title: str = "", queue: int |
     }
 
     _push_events.append(event)
-    _save_persisted_events()
+    _save_push_events()
 
     # Try saving to Redis asynchronously if available
     try:
@@ -80,6 +122,92 @@ def record_push_event(web_sent: int, tg_sent: int, title: str = "", queue: int |
         log.debug("Redis push event log error: %s", ex)
 
 
+def record_graph_request(queue_code: int | None):
+    """Record that a user requested status / graph information for a queue."""
+    now = time.time()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    code_str = str(queue_code) if queue_code in QUEUE_LABELS else "11"
+
+    _graph_stats["total"] += 1
+    _graph_stats["by_queue"][code_str] = _graph_stats["by_queue"].get(code_str, 0) + 1
+
+    # Daily aggregation
+    if today not in _graph_stats["daily"]:
+        _graph_stats["daily"][today] = {"total": 0, "by_queue": {}}
+    _graph_stats["daily"][today]["total"] += 1
+    dq = _graph_stats["daily"][today]["by_queue"]
+    dq[code_str] = dq.get(code_str, 0) + 1
+
+    # In-memory recent rolling window for 24h
+    _graph_recent_timestamps.append(now)
+    # Prune timestamps older than 24h
+    cutoff = now - 86400
+    while _graph_recent_timestamps and _graph_recent_timestamps[0] < cutoff:
+        _graph_recent_timestamps.pop(0)
+
+    # Persist every 10 requests or periodically
+    if _graph_stats["total"] % 5 == 0:
+        _save_graph_stats()
+
+    # Async increment in Redis if available
+    try:
+        client = redis_un.get_redis_client()
+        if client:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(client.hincrby("graph_requests:by_queue", code_str, 1))
+                loop.create_task(client.incr("graph_requests:total"))
+            except RuntimeError:
+                pass
+    except Exception:
+        pass
+
+
+def get_graph_requests_stats() -> dict[str, Any]:
+    """Return aggregated graph request statistics and rankings."""
+    now = time.time()
+    cutoff = now - 86400
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Clean up rolling window
+    while _graph_recent_timestamps and _graph_recent_timestamps[0] < cutoff:
+        _graph_recent_timestamps.pop(0)
+
+    # 24h count can be taken from rolling window or today's counter
+    rolling_24h = len(_graph_recent_timestamps)
+    today_total = _graph_stats.get("daily", {}).get(today, {}).get("total", 0)
+    requests_24h = max(rolling_24h, today_total)
+
+    total_requests = max(_graph_stats.get("total", 0), requests_24h)
+
+    # Detailed by queue
+    queue_counts = []
+    for code, lbl in QUEUE_LABELS.items():
+        count = _graph_stats.get("by_queue", {}).get(str(code), 0)
+        today_q = _graph_stats.get("daily", {}).get(today, {}).get("by_queue", {}).get(str(code), 0)
+        pct = round((count / total_requests * 100), 1) if total_requests > 0 else 0
+        queue_counts.append({
+            "code": code,
+            "label": lbl,
+            "total_requests": count,
+            "today_requests": today_q,
+            "percent": pct,
+        })
+
+    # Sort descending for top requested rankings
+    ranking = sorted(queue_counts, key=lambda x: (x["total_requests"], x["today_requests"]), reverse=True)
+
+    return {
+        "total_requests": total_requests,
+        "requests_24h": requests_24h,
+        "today_requests": today_total,
+        "ranking": ranking,
+        "by_queue": {item["label"]: item for item in queue_counts},
+    }
+
+
 def get_24h_push_stats() -> dict[str, Any]:
     """Calculate statistics of pushes sent in the last 24 hours."""
     now = time.time()
@@ -91,7 +219,6 @@ def get_24h_push_stats() -> dict[str, Any]:
     web_sent = sum(e.get("web_sent", 0) for e in recent_events)
     tg_sent = sum(e.get("tg_sent", 0) for e in recent_events)
 
-    # Return newest first
     sorted_history = sorted(recent_events, key=lambda x: x.get("timestamp", 0), reverse=True)[:50]
 
     return {
@@ -101,6 +228,81 @@ def get_24h_push_stats() -> dict[str, Any]:
         "events_count_24h": len(recent_events),
         "history": sorted_history,
     }
+
+
+def get_pushes_ranking() -> list[dict[str, Any]]:
+    """Compute per-queue push rankings: how many notifications were dispatched to each queue."""
+    now = time.time()
+    day_ago = now - 86400
+
+    stats_by_queue: dict[str, dict[str, Any]] = {}
+    for code, lbl in QUEUE_LABELS.items():
+        stats_by_queue[lbl] = {
+            "code": code,
+            "label": lbl,
+            "total_sent": 0,
+            "web_sent": 0,
+            "tg_sent": 0,
+            "events_count": 0,
+            "total_24h": 0,
+            "web_24h": 0,
+            "tg_24h": 0,
+            "events_24h": 0,
+            "last_sent": None,
+        }
+    # Special bucket for broadcast pushes
+    stats_by_queue["Всі"] = {
+        "code": 0,
+        "label": "Всі черги (загальна)",
+        "total_sent": 0,
+        "web_sent": 0,
+        "tg_sent": 0,
+        "events_count": 0,
+        "total_24h": 0,
+        "web_24h": 0,
+        "tg_24h": 0,
+        "events_24h": 0,
+        "last_sent": None,
+    }
+
+    for ev in _push_events:
+        q_lbl = ev.get("queue_label") or "Всі"
+        bucket = stats_by_queue.setdefault(q_lbl, {
+            "code": ev.get("queue") or 0,
+            "label": q_lbl,
+            "total_sent": 0,
+            "web_sent": 0,
+            "tg_sent": 0,
+            "events_count": 0,
+            "total_24h": 0,
+            "web_24h": 0,
+            "tg_24h": 0,
+            "events_24h": 0,
+            "last_sent": None,
+        })
+        t_sent = ev.get("total_sent", 0)
+        w_sent = ev.get("web_sent", 0)
+        g_sent = ev.get("tg_sent", 0)
+
+        bucket["total_sent"] += t_sent
+        bucket["web_sent"] += w_sent
+        bucket["tg_sent"] += g_sent
+        bucket["events_count"] += 1
+        bucket["last_sent"] = ev.get("datetime")
+
+        if ev.get("timestamp", 0) >= day_ago:
+            bucket["total_24h"] += t_sent
+            bucket["web_24h"] += w_sent
+            bucket["tg_24h"] += g_sent
+            bucket["events_24h"] += 1
+
+    # Sort descending by total_sent, then events_count
+    ranking = sorted(
+        stats_by_queue.values(),
+        key=lambda x: (x["total_sent"], x["events_count"], x["total_24h"]),
+        reverse=True,
+    )
+    return ranking
 
 
 async def get_db_stats() -> dict[str, Any]:
@@ -154,18 +356,31 @@ async def get_full_stats() -> dict[str, Any]:
 
     # Breakdown by queue
     queue_distribution: dict[str, dict[str, Any]] = {}
-    from untils.variebles import QUEUE_LABELS
+    subscribers_ranking_list: list[dict[str, Any]] = []
+
     for code, lbl in QUEUE_LABELS.items():
         w_count = len(subcription.get_push_subs(code))
         t_count = len(subcription.get_telegram_subs(code))
-        queue_distribution[lbl] = {
+        q_total = w_count + t_count
+        pct = round((q_total / max(1, total_users)) * 100, 1)
+
+        info = {
             "code": code,
+            "label": lbl,
             "web": w_count,
             "tg": t_count,
-            "total": w_count + t_count,
+            "total": q_total,
+            "percent": pct,
         }
+        queue_distribution[lbl] = info
+        subscribers_ranking_list.append(info)
+
+    # Sort descending by total subscribers for the ranking
+    subscribers_ranking_list.sort(key=lambda x: (x["total"], x["web"], x["tg"]), reverse=True)
 
     push_stats = get_24h_push_stats()
+    pushes_ranking = get_pushes_ranking()
+    graph_stats = get_graph_requests_stats()
 
     # Redis info
     redis_status = "offline"
@@ -190,8 +405,11 @@ async def get_full_stats() -> dict[str, Any]:
             "in_memory_active_web": in_memory_push,
             "in_memory_active_tg": in_memory_tg,
             "by_queue": queue_distribution,
+            "subscribers_ranking": subscribers_ranking_list,
         },
         "pushes_24h": push_stats,
+        "pushes_ranking": pushes_ranking,
+        "graph_requests": graph_stats,
         "redis": {
             "status": redis_status,
             "keys_count": redis_keys_count,

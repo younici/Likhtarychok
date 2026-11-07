@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import styles from "./AdmStats.module.css";
 
 const apiBase =
@@ -94,6 +94,24 @@ export default function AdmStats() {
     setError(null);
   };
 
+  // Extract structured dashboard data
+  const users = stats?.users || {};
+  const pushes = stats?.pushes_24h || {};
+  const dbData = stats?.database || {};
+  const redis = stats?.redis || {};
+  const queueDist = users.by_queue || {};
+  const subscribersRanking = users.subscribers_ranking || [];
+  const pushesRanking = stats?.pushes_ranking || [];
+  const graphRequests = stats?.graph_requests || {};
+  const graphRanking = graphRequests.ranking || [];
+  const pushHistory = pushes.history || [];
+
+  // Calculate highest queue subscribers for chart scale
+  const maxQueueSubscribers = useMemo(() => {
+    const counts = Object.values(queueDist).map((q) => q.total || 0);
+    return Math.max(...counts, 1);
+  }, [queueDist]);
+
   // If NOT authenticated, show password prompt
   if (!isAuthenticated) {
     return (
@@ -106,14 +124,14 @@ export default function AdmStats() {
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
               </svg>
             </div>
-            <h1 className={styles.loginTitle}>Панель адміністратора</h1>
+            <h1 className={styles.loginTitle}>Панель статистики</h1>
             <p className={styles.loginSubtitle}>
-              Доступ до статистики бази даних та розсилок захищено паролем
+              Доступ до статистики бази даних, розсилок та черг захищено паролем
             </p>
 
             <form onSubmit={handleLogin} className={styles.form}>
               <div className={styles.inputGroup}>
-                <label htmlFor="adm-pass">Пароль адміністратора</label>
+                <label htmlFor="adm-pass">Пароль доступу</label>
                 <div className={styles.inputWrapper}>
                   <input
                     id="adm-pass"
@@ -163,7 +181,7 @@ export default function AdmStats() {
             </form>
 
             <div className={styles.securityNote}>
-              🔒 Безпека: перевірка пароля здійснюється виключно на бекенді. Переглянути пароль у клієнтському коді неможливо.
+              🔒 Безпека: перевірка пароля здійснюється виключно на бекенді. Пароль не зберігається у клієнтському коді.
             </div>
           </div>
         </div>
@@ -171,23 +189,15 @@ export default function AdmStats() {
     );
   }
 
-  // Dashboard Data destructured
-  const users = stats?.users || {};
-  const pushes = stats?.pushes_24h || {};
-  const dbData = stats?.database || {};
-  const redis = stats?.redis || {};
-  const queueDist = users.by_queue || {};
-  const pushHistory = pushes.history || [];
-
   return (
     <div className={styles.container}>
-      {/* Header bar */}
+      {/* Top Header */}
       <div className={styles.dashHeader}>
         <div className={styles.dashTitleBlock}>
-          <h1>Статистика системи (/admstats)</h1>
+          <h1>Статистика сервісу (/stats)</h1>
           <div className={styles.metaText}>
             <span>Сервер: {stats?.server_time || "N/A"}</span>
-            {lastUpdated && <span>• Оновлено в клієнті: {lastUpdated}</span>}
+            {lastUpdated && <span>• Оновлено: {lastUpdated}</span>}
           </div>
         </div>
 
@@ -228,32 +238,13 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* Top 4 KPI Metrics Cards */}
+      {/* KPI Metric Cards */}
       <div className={styles.metricsGrid}>
-        {/* Metric 1: Pushes 24h */}
+        {/* Metric 1: Recipients of pushes */}
         <div className={styles.metricCard}>
           <div className={styles.metricCardHeader}>
-            <span className={styles.metricLabel}>Пуші за 24 години</span>
+            <span className={styles.metricLabel}>Отримувачі сповіщень</span>
             <div className={styles.metricIcon} style={{ color: "var(--accent)" }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
-                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
-              </svg>
-            </div>
-          </div>
-          <div className={styles.bigValue}>{pushes.total_24h ?? 0}</div>
-          <div className={styles.badgeRow}>
-            <span className={`${styles.badge} ${styles.badgeWarning}`}>Web: {pushes.web_24h ?? 0}</span>
-            <span className={`${styles.badge} ${styles.badgeSuccess}`}>Telegram: {pushes.tg_24h ?? 0}</span>
-          </div>
-          <div className={styles.subText}>Всього відправок (пакетів): {pushes.events_count_24h ?? 0}</div>
-        </div>
-
-        {/* Metric 2: Registered Users */}
-        <div className={styles.metricCard}>
-          <div className={styles.metricCardHeader}>
-            <span className={styles.metricLabel}>Користувачів у системі</span>
-            <div className={styles.metricIcon} style={{ color: "var(--accent-secondary)" }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
                 <circle cx="9" cy="7" r="4"></circle>
@@ -264,18 +255,61 @@ export default function AdmStats() {
           </div>
           <div className={styles.bigValue}>{users.total_registered ?? 0}</div>
           <div className={styles.badgeRow}>
-            <span className={styles.badge}>Web: {users.web_subscribers ?? 0}</span>
-            <span className={styles.badge}>Telegram: {users.telegram_subscribers ?? 0}</span>
+            <span className={`${styles.badge} ${styles.badgeWarning}`}>Web: {users.web_subscribers ?? 0}</span>
+            <span className={`${styles.badge} ${styles.badgeSuccess}`}>Telegram: {users.telegram_subscribers ?? 0}</span>
           </div>
           <div className={styles.subText}>
-            У пам&apos;яті: Web {users.in_memory_active_web ?? 0} • TG {users.in_memory_active_tg ?? 0}
+            Активні в пам&apos;яті: Web {users.in_memory_active_web ?? 0} • TG {users.in_memory_active_tg ?? 0}
           </div>
         </div>
 
-        {/* Metric 3: Database */}
+        {/* Metric 2: Pushes 24h */}
         <div className={styles.metricCard}>
           <div className={styles.metricCardHeader}>
-            <span className={styles.metricLabel}>База даних</span>
+            <span className={styles.metricLabel}>Пушів за 24 години</span>
+            <div className={styles.metricIcon} style={{ color: "var(--accent-strong)" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+            </div>
+          </div>
+          <div className={styles.bigValue}>{pushes.total_24h ?? 0}</div>
+          <div className={styles.badgeRow}>
+            <span className={styles.badge}>Web: {pushes.web_24h ?? 0}</span>
+            <span className={styles.badge}>Telegram: {pushes.tg_24h ?? 0}</span>
+          </div>
+          <div className={styles.subText}>
+            Розсилок (пакетів): {pushes.events_count_24h ?? 0} за добу
+          </div>
+        </div>
+
+        {/* Metric 3: Graph views / requests */}
+        <div className={styles.metricCard}>
+          <div className={styles.metricCardHeader}>
+            <span className={styles.metricLabel}>Запити графіків</span>
+            <div className={styles.metricIcon} style={{ color: "var(--accent-secondary)" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+              </svg>
+            </div>
+          </div>
+          <div className={styles.bigValue}>{graphRequests.total_requests ?? 0}</div>
+          <div className={styles.badgeRow}>
+            <span className={`${styles.badge} ${styles.badgeSuccess}`}>24г: {graphRequests.requests_24h ?? 0}</span>
+            {graphRanking[0] && (
+              <span className={styles.badge}>Топ: Черга {graphRanking[0].label}</span>
+            )}
+          </div>
+          <div className={styles.subText}>
+            Переглядів через сайт та API
+          </div>
+        </div>
+
+        {/* Metric 4: Database & Redis */}
+        <div className={styles.metricCard}>
+          <div className={styles.metricCardHeader}>
+            <span className={styles.metricLabel}>База даних &amp; Кеш</span>
             <div className={styles.metricIcon} style={{ color: dbData.status === "online" ? "var(--success)" : "var(--danger)" }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
@@ -286,97 +320,143 @@ export default function AdmStats() {
           </div>
           <div className={styles.bigValue} style={{ fontSize: "1.75rem" }}>
             <span className={dbData.status === "online" ? styles.badgeSuccess : styles.badgeDanger} style={{ padding: "0.2rem 0.7rem", borderRadius: "8px" }}>
-              {dbData.status === "online" ? "Online" : "Offline"}
+              {dbData.status === "online" ? "DB Online" : "DB Offline"}
             </span>
           </div>
           <div className={styles.badgeRow}>
-            <span className={styles.badge}>Таблиць: {Object.keys(dbData.tables || {}).length}</span>
-            {dbData.support_tickets_open !== undefined && (
-              <span className={`${styles.badge} ${styles.badgeWarning}`}>
-                Тікети: {dbData.support_tickets_open} відкр.
-              </span>
-            )}
-          </div>
-          <div className={styles.subText}>PostgreSQL + SQLAlchemy asyncpg</div>
-        </div>
-
-        {/* Metric 4: Redis & Runtime */}
-        <div className={styles.metricCard}>
-          <div className={styles.metricCardHeader}>
-            <span className={styles.metricLabel}>Кеш &amp; Сервіси</span>
-            <div className={styles.metricIcon} style={{ color: redis.status === "online" ? "var(--success)" : "var(--warning)" }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-                <line x1="6" y1="6" x2="6.01" y2="6"></line>
-                <line x1="6" y1="18" x2="6.01" y2="18"></line>
-              </svg>
-            </div>
-          </div>
-          <div className={styles.bigValue} style={{ fontSize: "1.75rem" }}>
-            <span className={redis.status === "online" ? styles.badgeSuccess : styles.badgeWarning} style={{ padding: "0.2rem 0.7rem", borderRadius: "8px" }}>
+            <span className={styles.badge}>PostgreSQL: {Object.keys(dbData.tables || {}).length} табл.</span>
+            <span className={redis.status === "online" ? styles.badgeSuccess : styles.badge}>
               Redis: {redis.status === "online" ? "Online" : "Offline"}
             </span>
           </div>
-          <div className={styles.badgeRow}>
-            <span className={styles.badge}>Ключів у Redis: {redis.keys_count ?? 0}</span>
-            <span className={styles.badge}>Кешування: {stats?.system?.can_cache ? "Увімкн" : "Вимкн"}</span>
-          </div>
           <div className={styles.subText}>
-            TG Бот: {stats?.system?.notify_bot_online ? "Онлайн" : "Офлайн"}
+            Ключів у Redis: {redis.keys_count ?? 0}
           </div>
         </div>
       </div>
 
-      {/* Section: Queue Distribution */}
+      {/* ========================================================
+          SECTION 1: QUEUE VISUAL CHART (DIAGRAM)
+          ======================================================== */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-              <circle cx="9" cy="7" r="4"></circle>
-              <polyline points="16 11 18 13 22 9"></polyline>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="20" x2="18" y2="10"></line>
+              <line x1="12" y1="20" x2="12" y2="4"></line>
+              <line x1="6" y1="20" x2="6" y2="14"></line>
             </svg>
-            Розподіл користувачів за чергами
+            Діаграма підписників за чергами (12 очередей)
           </div>
-          <span className={styles.metaText}>Всього підписників: {users.total_registered ?? 0}</span>
+          <span className={styles.metaText}>
+            Всього підписників на пуші: <strong>{users.total_registered ?? 0}</strong>
+          </span>
+        </div>
+
+        {/* Bar Chart Visualizer */}
+        <div className={styles.chartWrapper}>
+          <div className={styles.chartBarsContainer}>
+            {Object.entries(queueDist).map(([lbl, qData]) => {
+              const total = qData.total || 0;
+              const web = qData.web || 0;
+              const tg = qData.tg || 0;
+              const heightPct = Math.max(6, Math.round((total / maxQueueSubscribers) * 100));
+              const webPct = total > 0 ? (web / total) * 100 : 50;
+
+              return (
+                <div key={lbl} className={styles.chartBarCol}>
+                  <div className={styles.chartBarValue}>{total}</div>
+                  <div className={styles.chartBarTrack}>
+                    <div
+                      className={styles.chartBarFill}
+                      style={{ height: `${heightPct}%` }}
+                      title={`Черга ${lbl}: ${total} підписників (Web: ${web}, TG: ${tg})`}
+                    >
+                      {total > 0 && (
+                        <>
+                          <div className={styles.chartSegmentWeb} style={{ height: `${webPct}%` }} />
+                          <div className={styles.chartSegmentTg} style={{ height: `${100 - webPct}%` }} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className={styles.chartBarLabel}>
+                    <span className={styles.queueBadgeSmall}>{lbl}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className={styles.chartLegend}>
+            <div className={styles.legendItem}>
+              <span className={styles.legendDotWeb} />
+              <span>Web Push</span>
+            </div>
+            <div className={styles.legendItem}>
+              <span className={styles.legendDotTg} />
+              <span>Telegram</span>
+            </div>
+            <div className={styles.legendItem} style={{ marginLeft: "auto", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+              * Висота стовпчика пропорційна кількості підписників
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================
+          SECTION 2: SUBSCRIBERS RANKING
+          ======================================================== */}
+      <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <div className={styles.sectionTitle}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="8" r="7"></circle>
+              <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline>
+            </svg>
+            Рейтинг черг за кількістю підписок
+          </div>
+          <span className={styles.metaText}>Сортування за спаданням аудиторії</span>
         </div>
 
         <div className={styles.tableResponsive}>
           <table className={styles.customTable}>
             <thead>
               <tr>
+                <th style={{ width: "60px" }}>Місце</th>
                 <th>Черга</th>
                 <th>Web Push</th>
                 <th>Telegram</th>
                 <th>Всього</th>
-                <th>Частка</th>
+                <th>Частка від усіх</th>
               </tr>
             </thead>
             <tbody>
-              {Object.keys(queueDist).length === 0 ? (
+              {subscribersRanking.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className={styles.emptyState}>Немає зареєстрованих підписників</td>
+                  <td colSpan="6" className={styles.emptyState}>Немає даних про підписників</td>
                 </tr>
               ) : (
-                Object.entries(queueDist).map(([lbl, qData]) => {
-                  const maxTotal = Math.max(1, users.total_registered || 1);
-                  const pct = Math.round(((qData.total || 0) / maxTotal) * 100);
+                subscribersRanking.map((item, idx) => {
+                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
                   return (
-                    <tr key={lbl}>
+                    <tr key={item.label}>
                       <td>
-                        <span className={styles.queueBadge}>Черга {lbl}</span>
+                        <span className={styles.rankBadge}>{medal}</span>
                       </td>
-                      <td>{qData.web ?? 0}</td>
-                      <td>{qData.tg ?? 0}</td>
                       <td>
-                        <strong>{qData.total ?? 0}</strong>
+                        <span className={styles.queueBadge}>Черга {item.label}</span>
+                      </td>
+                      <td>{item.web}</td>
+                      <td>{item.tg}</td>
+                      <td>
+                        <strong>{item.total}</strong>
                       </td>
                       <td>
                         <div className={styles.progressBarWrap}>
-                          <div className={styles.progressBar} style={{ width: `${pct}%` }} />
+                          <div className={styles.progressBar} style={{ width: `${item.percent}%` }} />
                         </div>
-                        <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{pct}%</span>
+                        <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>{item.percent}%</span>
                       </td>
                     </tr>
                   );
@@ -387,16 +467,159 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* Section: Database Tables Stats */}
+      {/* ========================================================
+          SECTION 3: PUSHES RANKING (BY QUEUE)
+          ======================================================== */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+            </svg>
+            Рейтинг черг за надісланими пушами
+          </div>
+          <span className={styles.metaText}>
+            Скільки сповіщень доставлено по кожній черзі
+          </span>
+        </div>
+
+        <div className={styles.tableResponsive}>
+          <table className={styles.customTable}>
+            <thead>
+              <tr>
+                <th style={{ width: "60px" }}>Місце</th>
+                <th>Черга</th>
+                <th>Доставлено за 24г</th>
+                <th>Всього доставлено</th>
+                <th>Розсилок (подій)</th>
+                <th>Останній пуш</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pushesRanking.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className={styles.emptyState}>Немає зафіксованих пушів</td>
+                </tr>
+              ) : (
+                pushesRanking.map((item, idx) => {
+                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
+                  return (
+                    <tr key={item.label}>
+                      <td>
+                        <span className={styles.rankBadge}>{medal}</span>
+                      </td>
+                      <td>
+                        <span className={styles.queueBadge}>{item.label.startsWith("Всі") ? item.label : `Черга ${item.label}`}</span>
+                      </td>
+                      <td>
+                        {item.total_24h > 0 ? (
+                          <span className={`${styles.badge} ${styles.badgeSuccess}`}>+{item.total_24h}</span>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)" }}>0</span>
+                        )}
+                      </td>
+                      <td>
+                        <strong>{item.total_sent}</strong>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                          Web: {item.web_sent} • TG: {item.tg_sent}
+                        </div>
+                      </td>
+                      <td>{item.events_count}</td>
+                      <td>
+                        <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                          {item.last_sent || "—"}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ========================================================
+          SECTION 4: GRAPH REQUESTS & POPULARITY
+          ======================================================== */}
+      <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <div className={styles.sectionTitle}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+            Запити графіків &amp; Топ переглядів
+          </div>
+          <span className={styles.metaText}>
+            Всього переглядів: <strong>{graphRequests.total_requests ?? 0}</strong> • За добу: <strong>{graphRequests.requests_24h ?? 0}</strong>
+          </span>
+        </div>
+
+        <div className={styles.tableResponsive}>
+          <table className={styles.customTable}>
+            <thead>
+              <tr>
+                <th style={{ width: "60px" }}>Місце</th>
+                <th>Черга графіка</th>
+                <th>Запитів сьогодні/24г</th>
+                <th>Всього запитів</th>
+                <th>Частка запитів</th>
+              </tr>
+            </thead>
+            <tbody>
+              {graphRanking.length === 0 ? (
+                <tr>
+                  <td colSpan="5" className={styles.emptyState}>Запитів графіків поки не зафіксовано</td>
+                </tr>
+              ) : (
+                graphRanking.map((item, idx) => {
+                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
+                  return (
+                    <tr key={item.label}>
+                      <td>
+                        <span className={styles.rankBadge}>{medal}</span>
+                      </td>
+                      <td>
+                        <span className={styles.queueBadge}>Черга {item.label}</span>
+                      </td>
+                      <td>
+                        {item.today_requests > 0 ? (
+                          <span className={`${styles.badge} ${styles.badgeSuccess}`}>+{item.today_requests}</span>
+                        ) : (
+                          <span style={{ color: "var(--text-muted)" }}>0</span>
+                        )}
+                      </td>
+                      <td>
+                        <strong>{item.total_requests}</strong>
+                      </td>
+                      <td>
+                        <div className={styles.progressBarWrap}>
+                          <div className={styles.progressBar} style={{ width: `${item.percent}%` }} />
+                        </div>
+                        <span style={{ fontSize: "0.85rem", color: "var(--text-muted)" }}>{item.percent}%</span>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* ========================================================
+          SECTION 5: DATABASE TABLES STATS
+          ======================================================== */}
+      <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <div className={styles.sectionTitle}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
               <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
               <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
             </svg>
-            Статистика таблиць бази даних
+            Статистика бази даних (PostgreSQL)
           </div>
           <span className={styles.metaText}>
             Статус: {dbData.status === "online" ? "✅ Підключено" : "⚠️ Офлайн / вимкнено"}
@@ -441,12 +664,15 @@ export default function AdmStats() {
         )}
       </div>
 
-      {/* Section: Push History 24h */}
+      {/* ========================================================
+          SECTION 6: PUSH HISTORY 24H
+          ======================================================== */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
             </svg>
             Історія відправки сповіщень (за останні 24 години)
           </div>
@@ -464,7 +690,7 @@ export default function AdmStats() {
                 <th>Черга</th>
                 <th>Web Push</th>
                 <th>Telegram</th>
-                <th>Всього відправлено</th>
+                <th>Всього надіслано</th>
               </tr>
             </thead>
             <tbody>

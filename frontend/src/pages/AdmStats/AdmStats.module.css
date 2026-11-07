@@ -434,6 +434,135 @@
 }
 
 /* =========================================
+   RANK BADGES
+   ========================================= */
+.rankBadge {
+  font-size: 1.1rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+}
+
+/* =========================================
+   DIAGRAM / BAR CHART STYLES
+   ========================================= */
+.chartWrapper {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 14px;
+  padding: 1.5rem 1rem 1rem;
+  margin-top: 0.5rem;
+}
+
+.chartBarsContainer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.5rem;
+  height: 200px;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  overflow-x: auto;
+}
+
+.chartBarCol {
+  flex: 1;
+  min-width: 44px;
+  max-width: 72px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.chartBarValue {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.chartBarTrack {
+  width: 100%;
+  max-width: 38px;
+  height: 140px;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px 8px 0 0;
+  overflow: hidden;
+}
+
+.chartBarFill {
+  width: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  border-radius: 8px 8px 0 0;
+  transition: height 0.4s ease;
+  overflow: hidden;
+  box-shadow: 0 0 12px rgba(255, 202, 107, 0.2);
+}
+
+.chartSegmentWeb {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  width: 100%;
+}
+
+.chartSegmentTg {
+  background: linear-gradient(180deg, var(--accent-secondary), #41b883);
+  width: 100%;
+}
+
+.chartBarLabel {
+  margin-top: 0.5rem;
+  text-align: center;
+}
+
+.queueBadgeSmall {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: rgba(255, 202, 107, 0.12);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.chartLegend {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.legendDotWeb {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.legendDotTg {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--accent-secondary);
+}
+
+/* =========================================
    EMPTY STATE & SPINNER
    ========================================= */
 .emptyState {

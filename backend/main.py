@@ -46,7 +46,7 @@ ISDB = True
 
 DB_ONLINE = os.getenv("DB_ONLINE") == "true"
 NOTIFY_PASS = os.getenv("NOTIFY_PASS")
-ADMIN_STATS_PASSWORD = os.getenv("ADMIN_STATS_PASSWORD") or NOTIFY_PASS or "admstats123"
+ADMIN_STATS_PASSWORD = NOTIFY_PASS or os.getenv("ADMIN_STATS_PASSWORD") or "admstats123"
 ONLINE = os.getenv("ONLINE", "false").lower() == "true"
 REDIS_ONLINE = os.getenv("REDIS_ONLINE", "true").lower() == "true"
 CAN_CACHE = os.getenv("CAN_CACHE", "true").lower() == "true"
@@ -205,12 +205,16 @@ async def get_admin_stats(req: Request):
     if not password:
         password = req.headers.get("x-admin-password")
 
-    configured_pass = str(ADMIN_STATS_PASSWORD)
     given_pass = str(password or "")
+    is_valid = False
+    if NOTIFY_PASS and secrets.compare_digest(given_pass, str(NOTIFY_PASS)):
+        is_valid = True
+    elif ADMIN_STATS_PASSWORD and secrets.compare_digest(given_pass, str(ADMIN_STATS_PASSWORD)):
+        is_valid = True
 
-    if not password or not secrets.compare_digest(given_pass, configured_pass):
+    if not password or not is_valid:
         return Response(
-            content=json.dumps({"ok": False, "error": "Неверный пароль"}),
+            content=json.dumps({"ok": False, "error": "Невірний пароль"}),
             status_code=401,
             media_type="application/json",
         )
@@ -222,6 +226,7 @@ async def get_admin_stats(req: Request):
 @app.get(f"{BASE_PATH}/status")
 async def get_status(queue: str | None = None):
     queue_code = subcription.queue_code_from_input(queue)
+    stats_tracker.record_graph_request(queue_code)
     return {"Status": await notifier.parse_status_for_queue(queue_code)}
 
 
@@ -262,6 +267,7 @@ async def grpc_get_status(req: Request):
         queue = req.query_params.get("queue")
 
     queue_code = subcription.queue_code_from_input(queue)
+    stats_tracker.record_graph_request(queue_code)
     statuses = await notifier.parse_status_for_queue(queue_code)
     payload = _grpc_status_payload(statuses)
 

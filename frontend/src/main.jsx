@@ -26,6 +26,7 @@ createRoot(document.getElementById("root")).render(
           <Route path="/privacy" element={<Privacy />} />
           <Route path="/donate" element={<Donate />} />
           <Route path="/admstats" element={<AdmStats />} />
+          <Route path="/stats" element={<AdmStats />} />
           <Route path="*" element={<Home />} />
         </Route>
       </Routes>
