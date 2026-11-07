@@ -144,4 +144,4 @@ else
 fi
 
 log "deploy finished successfully: $new_rev"
-EOF
+exit 0
