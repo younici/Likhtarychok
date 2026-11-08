@@ -1127,19 +1127,18 @@
 /* ── Autocomplete Dropdown List ── */
 
 .resultsDropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
   background: #0e1320;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6);
-  max-height: 310px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  max-height: 320px;
   overflow-y: auto;
-  z-index: 50;
+  z-index: 10;
   padding: 6px;
-  margin: 0;
+  margin: 2px 0 0 0;
   list-style: none;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
@@ -1233,16 +1232,16 @@
 }
 
 .noResultsBox {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  right: 0;
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
   background: #0e1320;
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 16px;
+  margin-top: 2px;
   text-align: center;
-  z-index: 50;
+  z-index: 10;
 }
 
 .noResultsBox p {
