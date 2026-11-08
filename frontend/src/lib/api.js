@@ -153,16 +153,52 @@ export async function loadQueueStatus(queue) {
 // ── Address Search API ───────────────────────────────────────────────────────
 
 /**
- * Пошук черги за адресою (вулиця, будинок).
- * GET /api/addresses/search?q={query}&limit={limit}
+ * Отримати список усіх РЕМів та населених пунктів Житомирської області.
+ * GET /api/addresses/locations
  */
-export async function searchAddresses(query, limit = 12, signal) {
-  if (!query || !query.trim()) {
+export async function fetchAddressLocations(signal) {
+  try {
+    const response = await fetch(`${apiBase}/addresses/locations`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+    if (!response.ok) {
+      return { rems: [], cities_by_rem: {}, total_rems: 0, total_cities: 0 };
+    }
+    const data = await response.json();
+    return {
+      rems: Array.isArray(data?.rems) ? data.rems : [],
+      cities_by_rem: data?.cities_by_rem && typeof data.cities_by_rem === 'object' ? data.cities_by_rem : {},
+      total_rems: Number(data?.total_rems) || 0,
+      total_cities: Number(data?.total_cities) || 0,
+    };
+  } catch (_) {
+    return { rems: [], cities_by_rem: {}, total_rems: 0, total_cities: 0 };
+  }
+}
+
+/**
+ * Пошук черги за адресою по всій Житомирській області (РЕМ, населений пункт, вулиця, будинок).
+ * GET /api/addresses/search?q={query}&rem={rem}&city={city}&limit={limit}
+ */
+export async function searchAddresses(query = '', limit = 16, signal, rem = '', city = '') {
+  const cleanQ = (query || '').trim();
+  const cleanRem = (rem || '').trim();
+  const cleanCity = (city || '').trim();
+
+  if (!cleanQ && !cleanRem && !cleanCity) {
     return { results: [], total_indexed: 0, updated_at: null };
   }
 
   try {
-    const url = `${apiBase}/addresses/search?q=${encodeURIComponent(query.trim())}&limit=${limit}`;
+    const params = new URLSearchParams();
+    if (cleanQ) params.set('q', cleanQ);
+    if (cleanRem) params.set('rem', cleanRem);
+    if (cleanCity) params.set('city', cleanCity);
+    params.set('limit', String(limit));
+
+    const url = `${apiBase}/addresses/search?${params.toString()}`;
     const response = await fetch(url, {
       method: 'GET',
       headers: { Accept: 'application/json' },

@@ -60,12 +60,12 @@ async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler()
     if ONLINE:
         scheduler.add_job(notifier.check_and_notify, "cron", minute="*/30")
-        scheduler.add_job(addresses.sync_addresses_from_ztoe, "interval", hours=12)
     else:
         log.info("app started in offline mode")
 
     if CAN_CACHE:
         scheduler.add_job(cache.cache_loop, "cron", minute="*/5")
+        scheduler.add_job(addresses.sync_addresses_from_ztoe, "interval", hours=12)
     scheduler.start()
 
     global DB_ONLINE
@@ -293,18 +293,33 @@ async def grpc_get_status(req: Request):
 
 @app.get(f"{BASE_PATH}/addresses/search")
 @app.get("/addresses/search")
-async def search_addresses(q: str = "", limit: int = 12):
-    limit = max(1, min(30, limit))
+async def search_addresses(
+    q: str = "", limit: int = 16, rem: str = "", city: str = ""
+):
+    limit = max(1, min(40, limit))
     meta = addresses.get_meta()
-    results = addresses.search_addresses(q, limit=limit)
+    if meta["total_indexed"] == 0 and ONLINE:
+        await addresses.ensure_addresses_loaded()
+        meta = addresses.get_meta()
+    results = addresses.search_addresses(q, limit=limit, rem=rem, city=city)
     return {
         "ok": True,
         "query": q,
+        "rem": rem,
+        "city": city,
         "results": results,
         "total_indexed": meta["total_indexed"],
         "updated_at": meta["updated_at"],
         "source": meta["source"],
     }
+
+
+@app.get(f"{BASE_PATH}/addresses/locations")
+@app.get("/addresses/locations")
+async def get_addresses_locations():
+    if addresses.get_meta()["total_indexed"] == 0 and ONLINE:
+        await addresses.ensure_addresses_loaded()
+    return {"ok": True, **addresses.get_locations()}
 
 
 @app.get(f"{BASE_PATH}/addresses/meta")

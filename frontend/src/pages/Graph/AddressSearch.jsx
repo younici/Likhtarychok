@@ -1,58 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { searchAddresses } from '../../lib/api.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { fetchAddressLocations, searchAddresses } from '../../lib/api.js';
 import styles from './Graph.module.css';
 
-// Fallback directory of Zhytomyr streets for offline/dev resilience
-const ZHYTOMYR_STREETS_CATALOG = [
-  { street: 'вул. Київська', city: 'м. Житомир', rem: 'Житомирський', queue: '31', queue_label: '3.1', houses_preview: '1-45, 2-56' },
-  { street: 'вул. Велика Бердичівська', city: 'м. Житомир', rem: 'Житомирський', queue: '12', queue_label: '1.2', houses_preview: '2-112, 1-89' },
-  { street: 'вул. Перемоги', city: 'м. Житомир', rem: 'Житомирський', queue: '21', queue_label: '2.1', houses_preview: '1-99, 2-104' },
-  { street: 'вул. Михайлівська', city: 'м. Житомир', rem: 'Житомирський', queue: '32', queue_label: '3.2', houses_preview: '1-25, 2-24' },
-  { street: 'вул. Покровська', city: 'м. Житомир', rem: 'Житомирський', queue: '41', queue_label: '4.1', houses_preview: '1-135, 2-160' },
-  { street: 'вул. Чуднівська', city: 'м. Житомир', rem: 'Житомирський', queue: '51', queue_label: '5.1', houses_preview: '1-115, 2-120' },
-  { street: 'вул. Домбровського', city: 'м. Житомир', rem: 'Житомирський', queue: '22', queue_label: '2.2', houses_preview: '1-67, 2-84' },
-  { street: 'вул. Вітрука', city: 'м. Житомир', rem: 'Житомирський', queue: '61', queue_label: '6.1', houses_preview: '1-55, 2-60' },
-  { street: 'вул. Івана Мазепи', city: 'м. Житомир', rem: 'Житомирський', queue: '31', queue_label: '3.1', houses_preview: '1-103, 2-110' },
-  { street: 'вул. Шевченка', city: 'м. Житомир', rem: 'Житомирський', queue: '11', queue_label: '1.1', houses_preview: '1-85, 2-90' },
-  { street: 'вул. Корольова', city: 'м. Житомир', rem: 'Житомирський', queue: '42', queue_label: '4.2', houses_preview: '1-168, 2-174' },
-  { street: 'просп. Миру', city: 'м. Житомир', rem: 'Житомирський', queue: '52', queue_label: '5.2', houses_preview: '1-45, 2-62' },
-  { street: 'вул. Лесі Українки', city: 'м. Житомир', rem: 'Житомирський', queue: '62', queue_label: '6.2', houses_preview: '1-79, 2-86' },
-  { street: 'вул. Михайла Грушевського', city: 'м. Житомир', rem: 'Житомирський', queue: '21', queue_label: '2.1', houses_preview: '1-105, 2-112' },
-  { street: 'вул. Небесної Сотні', city: 'м. Житомир', rem: 'Житомирський', queue: '31', queue_label: '3.1', houses_preview: '1-88, 2-94' },
-  { street: 'вул. Селецька', city: 'м. Житомир', rem: 'Житомирський', queue: '12', queue_label: '1.2', houses_preview: '1-50, 2-48' },
-  { street: 'вул. Бориса Тена', city: 'м. Житомир', rem: 'Житомирський', queue: '22', queue_label: '2.2', houses_preview: '1-102, 2-98' },
-  { street: 'вул. Святослава Ріхтера', city: 'м. Житомир', rem: 'Житомирський', queue: '32', queue_label: '3.2', houses_preview: '1-75, 2-80' },
-  { street: 'вул. Театральна', city: 'м. Житомир', rem: 'Житомирський', queue: '11', queue_label: '1.1', houses_preview: '1-30, 2-28' },
-  { street: 'вул. Космонавтів', city: 'м. Житомир', rem: 'Житомирський', queue: '61', queue_label: '6.1', houses_preview: '1-64, 2-70' },
-  { street: 'вул. Героїв Десантників', city: 'м. Житомир', rem: 'Житомирський', queue: '51', queue_label: '5.1', houses_preview: '1-35, 2-40' },
-  { street: 'вул. Вокзальна', city: 'м. Житомир', rem: 'Житомирський', queue: '41', queue_label: '4.1', houses_preview: '1-28, 2-32' },
-];
-
-function normalizeQuery(str = '') {
-  return str.toLowerCase().replace(/^(вул\.|вулиця|просп\.|проспект|пров\.|провулок)\s*/i, '').trim();
-}
-
-function parseQueryParts(query = '') {
-  const trimmed = query.trim();
-  // Match trailing house number (e.g. "Київська 21", "Миру 14-а", "Перемоги, 5")
-  const match = trimmed.match(/^(.*?)[,\s]+(\d+[\wа-яіїєґА-ЯІЇЄҐ/-]*)$/i);
-  if (match) {
-    return {
-      streetQuery: match[1].trim(),
-      houseQuery: match[2].trim(),
-    };
-  }
-  return { streetQuery: trimmed, houseQuery: '' };
+function extractSearchTokens(query = '') {
+  return query
+    .trim()
+    .replace(/[,;]/g, ' ')
+    .split(/\s+/)
+    .filter((tok) => tok.length >= 2 && !/^\d/.test(tok));
 }
 
 function highlightMatch(text, query) {
   if (!query || !text) return text;
-  const cleanQ = query.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  if (!cleanQ) return text;
+  const tokens = extractSearchTokens(query);
+  if (tokens.length === 0) return text;
 
-  const parts = text.split(new RegExp(`(${cleanQ})`, 'gi'));
+  const escaped = tokens
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  if (!escaped) return text;
+
+  const regex = new RegExp(`(${escaped})`, 'gi');
+  const parts = text.split(regex);
+  const lowerTokens = tokens.map((t) => t.toLowerCase());
+
   return parts.map((part, i) =>
-    part.toLowerCase() === query.toLowerCase() ? (
+    lowerTokens.includes(part.toLowerCase()) ? (
       <strong key={i} className={styles.highlightText}>
         {part}
       </strong>
@@ -64,6 +37,12 @@ function highlightMatch(text, query) {
 
 export default function AddressSearch({ onSelectQueue, currentQueue }) {
   const [query, setQuery] = useState('');
+  const [selectedRem, setSelectedRem] = useState('');
+  const [selectedCity, setSelectedCity] = useState('');
+  const [locations, setLocations] = useState({
+    rems: [],
+    cities_by_rem: {},
+  });
   const [results, setResults] = useState([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -83,12 +62,33 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
         const parsed = JSON.parse(saved);
         if (parsed && (parsed.street || parsed.queue)) {
           setSavedAddress(parsed);
+          if (parsed.rem) setSelectedRem(parsed.rem);
+          if (parsed.city) setSelectedCity(parsed.city);
         }
       }
     } catch (_) {
       /* ignore storage errors */
     }
   }, []);
+
+  // Load full oblast REMs & settlements hierarchy from backend
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchAddressLocations(controller.signal).then((data) => {
+      if (Array.isArray(data?.rems) && data.rems.length > 0) {
+        setLocations({
+          rems: data.rems,
+          cities_by_rem: data.cities_by_rem || {},
+        });
+      }
+    });
+    return () => controller.abort();
+  }, []);
+
+  const availableCities = useMemo(() => {
+    if (!selectedRem) return [];
+    return locations.cities_by_rem?.[selectedRem] || [];
+  }, [selectedRem, locations.cities_by_rem]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -101,10 +101,13 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Search logic with debounce and API / Fallback
+  // Search logic with debounce across the entire Zhytomyr Oblast
   useEffect(() => {
     const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    const hasLocationFilter = Boolean(selectedCity);
+
+    // Require at least 2 characters unless a specific settlement (city) is selected
+    if (trimmed.length < 2 && !hasLocationFilter) {
       setResults([]);
       setIsLoading(false);
       return;
@@ -119,56 +122,36 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
     setIsLoading(true);
 
     const timerId = setTimeout(async () => {
-      const { streetQuery, houseQuery } = parseQueryParts(trimmed);
-      let apiItems = [];
+      const limit = hasLocationFilter && !trimmed ? 25 : 16;
+      const data = await searchAddresses(
+        trimmed,
+        limit,
+        controller.signal,
+        selectedRem,
+        selectedCity
+      );
 
-      try {
-        const data = await searchAddresses(trimmed, 12, controller.signal);
-        if (Array.isArray(data?.results) && data.results.length > 0) {
-          apiItems = data.results;
-        }
-      } catch (_) {
-        /* fallback to local directory */
-      }
+      if (data?.aborted) return;
 
-      // If backend returned nothing or empty, search local catalog
-      if (apiItems.length === 0) {
-        const normStreetQ = normalizeQuery(streetQuery);
-        const filtered = ZHYTOMYR_STREETS_CATALOG.filter((item) => {
-          const normStreet = normalizeQuery(item.street);
-          return normStreet.includes(normStreetQ);
-        });
-
-        apiItems = filtered.map((item) => ({
-          ...item,
-          matched_house: houseQuery || null,
-        }));
-      } else if (houseQuery) {
-        apiItems = apiItems.map((item) => ({
-          ...item,
-          matched_house: item.matched_house || houseQuery,
-        }));
-      }
-
+      const apiItems = Array.isArray(data?.results) ? data.results : [];
       setResults(apiItems);
       setIsLoading(false);
-      setIsOpen(apiItems.length > 0);
+      setIsOpen(apiItems.length > 0 || trimmed.length >= 2);
       setSelectedIndex(-1);
-    }, 220);
+    }, 180);
 
     return () => {
       clearTimeout(timerId);
       controller.abort();
     };
-  }, [query]);
+  }, [query, selectedRem, selectedCity]);
 
   const handleSelect = useCallback(
     (item) => {
       if (!item) return;
-      const { houseQuery } = parseQueryParts(query);
       const chosen = {
         ...item,
-        matched_house: item.matched_house || houseQuery || null,
+        matched_house: item.matched_house || null,
       };
 
       try {
@@ -178,6 +161,8 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
       }
 
       setSavedAddress(chosen);
+      if (chosen.rem) setSelectedRem(chosen.rem);
+      if (chosen.city) setSelectedCity(chosen.city);
       setIsEditing(false);
       setIsOpen(false);
       setQuery('');
@@ -186,13 +171,15 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
         onSelectQueue(chosen.queue);
       }
     },
-    [query, onSelectQueue]
+    [onSelectQueue]
   );
 
   const handleClear = () => {
     setQuery('');
-    setResults([]);
-    setIsOpen(false);
+    if (!selectedCity) {
+      setResults([]);
+      setIsOpen(false);
+    }
     inputRef.current?.focus();
   };
 
@@ -205,6 +192,21 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
     setSavedAddress(null);
     setIsEditing(true);
     setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const handleRemChange = (e) => {
+    const newRem = e.target.value;
+    setSelectedRem(newRem);
+    setSelectedCity('');
+    setResults([]);
+  };
+
+  const handleCityChange = (e) => {
+    const newCity = e.target.value;
+    setSelectedCity(newCity);
+    if (newCity) {
+      setIsOpen(true);
+    }
   };
 
   const handleKeyDown = (e) => {
@@ -225,13 +227,22 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
       e.preventDefault();
       if (selectedIndex >= 0 && selectedIndex < results.length) {
         handleSelect(results[selectedIndex]);
-      } else if (results.length > 0) {
+      } else if (results.length === 1) {
         handleSelect(results[0]);
       }
     } else if (e.key === 'Escape') {
       setIsOpen(false);
     }
   };
+
+  const hasMultiQueueWithoutHouse = useMemo(
+    () =>
+      results.some(
+        (item) =>
+          Number(item.total_queues_for_street) > 1 && !item.matched_house
+      ),
+    [results]
+  );
 
   return (
     <div className={styles.addressSearchBox} ref={containerRef}>
@@ -255,7 +266,7 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
               </div>
               <div className={styles.savedAddressMeta}>
                 {savedAddress.city || 'м. Житомир'} · {savedAddress.rem || 'Житомирський'} РЕМ
-                {savedAddress.houses_preview && ` · ${savedAddress.houses_preview}`}
+                {savedAddress.houses_preview && ` · буд.: ${savedAddress.houses_preview}`}
               </div>
             </div>
             <div className={styles.savedQueueBadge}>
@@ -285,12 +296,60 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
         </div>
       ) : null}
 
-      {/* ── Google Maps style input field ── */}
+      {/* ── Oblast Filters + Smart Search Input ── */}
       {(!savedAddress || isEditing) && (
         <div className={styles.searchInputWrapper}>
+          {/* Optional REM & Settlement Filter Bar for all of Zhytomyr Oblast */}
+          <div className={styles.locationFiltersRow}>
+            <div className={styles.locationSelectWrap}>
+              <select
+                className={styles.locationSelect}
+                value={selectedRem}
+                onChange={handleRemChange}
+                aria-label="Оберіть РЕМ (район Житомирської області)"
+              >
+                <option value="">Уся Житомирська область (усі РЕМ)</option>
+                {locations.rems.map((remName) => (
+                  <option key={remName} value={remName}>
+                    {remName} РЕМ
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedRem && (
+              <div className={styles.locationSelectWrap}>
+                <select
+                  className={styles.locationSelect}
+                  value={selectedCity}
+                  onChange={handleCityChange}
+                  aria-label="Оберіть населений пункт"
+                >
+                  <option value="">
+                    Усі населені пункти ({availableCities.length})
+                  </option>
+                  {availableCities.map((cityName) => (
+                    <option key={cityName} value={cityName}>
+                      {cityName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           <div className={styles.searchBar}>
             <span className={styles.searchIconLeft} aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
                 <circle cx="11" cy="11" r="8" />
                 <line x1="21" y1="21" x2="16.65" y2="16.65" />
               </svg>
@@ -300,7 +359,11 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
               ref={inputRef}
               type="search"
               className={styles.searchInput}
-              placeholder="Введіть вулицю та номер будинку (напр. Київська 21)…"
+              placeholder={
+                selectedCity
+                  ? `Введіть вулицю та будинок (${selectedCity})…`
+                  : 'Місто/село, вулиця та будинок (напр. Київська 21, Бердичів Житомирська 131)…'
+              }
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
@@ -319,8 +382,22 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
 
             {isLoading && (
               <span className={styles.searchSpinner} aria-label="Пошук…">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="12" strokeLinecap="round" />
+                <svg
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <circle
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    strokeDasharray="32"
+                    strokeDashoffset="12"
+                    strokeLinecap="round"
+                  />
                 </svg>
               </span>
             )}
@@ -354,20 +431,28 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
               className={styles.resultsDropdown}
               role="listbox"
             >
+              {hasMultiQueueWithoutHouse && (
+                <li className={styles.multiQueueHint} role="presentation">
+                  Додайте номер будинку через пробіл (напр.{' '}
+                  <strong>{results[0]?.street?.replace(/^вул\.\s*/i, '') || 'Київська'} 21</strong>
+                  ), щоб система відфільтрувала точну чергу вашого будинку
+                </li>
+              )}
+
               {results.map((item, idx) => {
                 const isSelected = selectedIndex === idx;
-                const { streetQuery } = parseQueryParts(query);
-                const itemQueueLabel = item.queue_label || `${item.queue?.[0]}.${item.queue?.[1]}`;
+                const itemQueueLabel =
+                  item.queue_label || `${item.queue?.[0]}.${item.queue?.[1]}`;
                 const isCurrentActiveQueue = item.queue === currentQueue;
 
                 return (
                   <li
-                    key={`${item.street}-${item.queue}-${idx}`}
+                    key={`${item.rem}-${item.city}-${item.street}-${item.queue}-${idx}`}
                     role="option"
                     aria-selected={isSelected}
-                    className={`${styles.resultItem} ${isSelected ? styles.resultItemActive : ''} ${
-                      isCurrentActiveQueue ? styles.resultItemCurrentQueue : ''
-                    }`}
+                    className={`${styles.resultItem} ${
+                      isSelected ? styles.resultItemActive : ''
+                    } ${isCurrentActiveQueue ? styles.resultItemCurrentQueue : ''}`}
                     onMouseEnter={() => setSelectedIndex(idx)}
                     onClick={() => handleSelect(item)}
                   >
@@ -379,7 +464,7 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
 
                     <div className={styles.resultItemBody}>
                       <div className={styles.resultItemStreet}>
-                        {highlightMatch(item.street, streetQuery || query)}
+                        <span>{highlightMatch(item.street, query)}</span>
                         {item.matched_house && (
                           <span className={styles.matchedHouseChip}>
                             буд. {item.matched_house}
@@ -387,7 +472,9 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
                         )}
                       </div>
                       <div className={styles.resultItemSubtitle}>
-                        <span>{item.city || 'м. Житомир'}</span>
+                        <span className={styles.resultCityText}>
+                          {highlightMatch(item.city || 'м. Житомир', query)}
+                        </span>
                         {item.rem && <span> · {item.rem} РЕМ</span>}
                         {item.houses_preview && (
                           <span className={styles.housesPreviewText}>
@@ -409,12 +496,18 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
             </ul>
           )}
 
-          {isOpen && !isLoading && query.trim().length >= 2 && results.length === 0 && (
-            <div className={styles.noResultsBox}>
-              <p>Адресу &ldquo;{query}&rdquo; не знайдено</p>
-              <span>Спробуйте ввести тільки назву вулиці без скорочень</span>
-            </div>
-          )}
+          {isOpen &&
+            !isLoading &&
+            (query.trim().length >= 2 || selectedCity) &&
+            results.length === 0 && (
+              <div className={styles.noResultsBox}>
+                <p>Адресу &ldquo;{query || selectedCity}&rdquo; не знайдено</p>
+                <span>
+                  Спробуйте обрати свій РЕМ та населений пункт вище або введіть назву
+                  вулиці без скорочень
+                </span>
+              </div>
+            )}
         </div>
       )}
     </div>

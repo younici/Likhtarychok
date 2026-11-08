@@ -2,10 +2,10 @@ import asyncio
 import difflib
 import json
 import logging
-import os
 import re
+from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -16,544 +16,13 @@ from untils.variebles import QUEUE_LABELS
 
 log = logging.getLogger(__name__)
 
-ADDRESSES_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "data", "addresses.json"
-)
+REDIS_ADDRESSES_KEY = "ztoe_addresses_cache"
+CACHE_MAX_AGE_SECONDS = 12 * 3600  # 12 hours
 
 # ---------------------------------------------------------------------------
-# Fallback Seed: Core streets of Zhytomyr and major towns in Zhytomyr Oblast
-# Distributed across queues 11..62 (1.1..6.2)
+# Russian <-> Ukrainian Street & Settlement Synonyms Dictionary
 # ---------------------------------------------------------------------------
-FALLBACK_ADDRESSES: List[Dict[str, Any]] = [
-    # Queue 11 (1.1)
-    {
-        "id": "seed_1",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Київська",
-        "houses": ["1", "3", "5", "7", "9", "13", "15", "17", "21", "23", "25", "27", "29", "31", "37", "43", "47", "51", "55", "77", "79", "81"],
-        "queue": 11,
-        "queue_label": "1.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_2",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Михайлівська",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "12", "14", "16", "18", "20"],
-        "queue": 11,
-        "queue_label": "1.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_3",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "майдан Перемоги",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "12"],
-        "queue": 11,
-        "queue_label": "1.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_4",
-        "rem": "Бердичівський",
-        "city": "місто Бердичів",
-        "street": "вул. Житомирська",
-        "houses": ["1", "3", "5", "12", "15", "27", "43", "85", "131"],
-        "queue": 11,
-        "queue_label": "1.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 12 (1.2)
-    {
-        "id": "seed_5",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Київська",
-        "houses": ["2", "4", "6", "8", "10", "12", "14", "16", "20", "22", "24", "26", "28", "48", "52", "60", "72", "88", "94/2", "112"],
-        "queue": 12,
-        "queue_label": "1.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_6",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Театральна",
-        "houses": ["3", "5", "7", "9", "11", "13", "15", "17", "19", "21", "23"],
-        "queue": 12,
-        "queue_label": "1.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_7",
-        "rem": "Коростенський",
-        "city": "місто Коростень",
-        "street": "вул. Грушевського",
-        "houses": ["1", "3", "5", "7", "12", "14", "18", "22", "35", "41"],
-        "queue": 12,
-        "queue_label": "1.2",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 21 (2.1)
-    {
-        "id": "seed_8",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Велика Бердичівська",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "15а", "17", "23", "27", "31", "35", "41", "47", "53"],
-        "queue": 21,
-        "queue_label": "2.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_9",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "майдан Соборний",
-        "houses": ["1", "2", "3", "4", "5", "6", "7/1"],
-        "queue": 21,
-        "queue_label": "2.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_10",
-        "rem": "Звягельський",
-        "city": "місто Звягель",
-        "street": "вул. Шевченка",
-        "houses": ["2", "4", "6", "8", "10", "16", "24", "30", "42"],
-        "queue": 21,
-        "queue_label": "2.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 22 (2.2)
-    {
-        "id": "seed_11",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Велика Бердичівська",
-        "houses": ["2", "4", "6", "8", "10", "12", "14", "16", "18", "20", "26", "32", "40", "56", "64", "70"],
-        "queue": 22,
-        "queue_label": "2.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_12",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Івана Кочерги",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "11"],
-        "queue": 22,
-        "queue_label": "2.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_13",
-        "rem": "Малинський",
-        "city": "місто Малин",
-        "street": "вул. Грушевського",
-        "houses": ["2", "4", "6", "8", "15", "21", "29", "43"],
-        "queue": 22,
-        "queue_label": "2.2",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 31 (3.1)
-    {
-        "id": "seed_14",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Покровська",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "17", "21", "27", "33", "45", "59", "71", "95", "123"],
-        "queue": 31,
-        "queue_label": "3.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_15",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Небесної Сотні",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "21", "27", "33", "39", "45"],
-        "queue": 31,
-        "queue_label": "3.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_16",
-        "rem": "Коростишівський",
-        "city": "місто Коростишів",
-        "street": "вул. Київська",
-        "houses": ["1", "3", "5", "8", "12", "19", "25", "38", "55", "67"],
-        "queue": 31,
-        "queue_label": "3.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 32 (3.2)
-    {
-        "id": "seed_17",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Покровська",
-        "houses": ["2", "4", "6", "8", "10", "12", "14", "16", "18", "20", "28", "34", "48", "62", "80", "102", "130"],
-        "queue": 32,
-        "queue_label": "3.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_18",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Лесі Українки",
-        "houses": ["1", "3", "5", "7", "9", "11", "14", "17", "21", "28", "33", "40", "48"],
-        "queue": 32,
-        "queue_label": "3.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_19",
-        "rem": "Бердичівський",
-        "city": "місто Бердичів",
-        "street": "вул. Європейська",
-        "houses": ["1", "3", "5", "9", "14", "19", "24", "31", "48"],
-        "queue": 32,
-        "queue_label": "3.2",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 41 (4.1)
-    {
-        "id": "seed_20",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Чуднівська",
-        "houses": ["1", "3", "5", "7", "9", "13", "17", "21", "35", "49", "63", "77", "89", "101", "104", "115"],
-        "queue": 41,
-        "queue_label": "4.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_21",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Перемоги",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "19", "23", "29", "35", "47", "53", "61"],
-        "queue": 41,
-        "queue_label": "4.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_22",
-        "rem": "Коростенський",
-        "city": "місто Коростень",
-        "street": "вул. Героїв Чорнобиля",
-        "houses": ["1", "3", "7", "11", "15", "23", "31"],
-        "queue": 41,
-        "queue_label": "4.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 42 (4.2)
-    {
-        "id": "seed_23",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Перемоги",
-        "houses": ["2", "4", "6", "8", "10", "12", "14", "16", "20", "24", "32", "40", "52", "68", "74", "90"],
-        "queue": 42,
-        "queue_label": "4.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_24",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Кафедральна",
-        "houses": ["1", "2", "3", "4", "5", "6", "8", "10", "12"],
-        "queue": 42,
-        "queue_label": "4.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_25",
-        "rem": "Звягельський",
-        "city": "місто Звягель",
-        "street": "вул. Соборності",
-        "houses": ["1", "3", "5", "7", "9", "13", "17", "21", "29"],
-        "queue": 42,
-        "queue_label": "4.2",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 51 (5.1)
-    {
-        "id": "seed_26",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "просп. Миру",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "17", "19", "21", "23", "25", "31", "37", "45"],
-        "queue": 51,
-        "queue_label": "5.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_27",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Вітрука",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "19", "23", "31", "41", "47"],
-        "queue": 51,
-        "queue_label": "5.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_28",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Селецька",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "17", "21", "25", "31"],
-        "queue": 51,
-        "queue_label": "5.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_29",
-        "rem": "Бердичівський",
-        "city": "місто Бердичів",
-        "street": "вул. Вінницька",
-        "houses": ["2", "4", "6", "10", "18", "25", "39", "52"],
-        "queue": 51,
-        "queue_label": "5.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 52 (5.2)
-    {
-        "id": "seed_30",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "просп. Миру",
-        "houses": ["2", "4", "6", "8", "10", "12", "14", "16", "18", "20", "22", "26", "32", "40"],
-        "queue": 52,
-        "queue_label": "5.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_31",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Корольова",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "12", "14", "16", "22", "34", "46"],
-        "queue": 52,
-        "queue_label": "5.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_32",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Промислова",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "12", "15", "18"],
-        "queue": 52,
-        "queue_label": "5.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_33",
-        "rem": "Коростишівський",
-        "city": "місто Коростишів",
-        "street": "вул. Героїв Чорнобиля",
-        "houses": ["2", "4", "6", "10", "14", "22"],
-        "queue": 52,
-        "queue_label": "5.2",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 61 (6.1)
-    {
-        "id": "seed_34",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Грушевського",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "15", "17", "21", "25", "33", "41", "55", "67", "89"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_35",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Східна",
-        "houses": ["1", "3", "5", "7", "9", "11", "13", "17", "23", "29", "37", "45", "61", "73", "85"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_36",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Шевченка",
-        "houses": ["1", "3", "5", "7", "9", "11", "15", "21", "27", "35", "41", "53", "67", "83"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_37",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Сергія Параджанова",
-        "houses": ["1", "3", "5", "7", "9", "13", "19", "25", "33", "47"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_38",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Домбровського",
-        "houses": ["1", "3", "5", "7", "9", "11", "15", "21", "27", "33", "45"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_39",
-        "rem": "Малинський",
-        "city": "місто Малин",
-        "street": "вул. Кримська",
-        "houses": ["1", "3", "5", "7", "12", "16", "24"],
-        "queue": 61,
-        "queue_label": "6.1",
-        "note": "побутові споживачі",
-    },
-
-    # Queue 62 (6.2)
-    {
-        "id": "seed_40",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Князів Острозьких",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "12", "15", "20", "26", "34", "48", "59"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_41",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Богуна",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "14", "18", "24", "32"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_42",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Івана Мазепи",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "11", "17", "23", "31"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_43",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Хлібна",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "11", "15", "19", "23"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_44",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Ріхтера",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "12", "16", "24", "38"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_45",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Кафедральна",
-        "houses": ["1", "2", "3", "4", "5", "6", "8", "10", "12"],
-        "queue": 42,
-        "queue_label": "4.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_46",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Космонавтів",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "14", "22", "30"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_47",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Ціолковського",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "12", "16"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_48",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "вул. Польова",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "14", "18"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_49",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "просп. Незалежності",
-        "houses": ["1", "2", "3", "4", "5", "6", "7", "8", "10", "13", "21", "29", "45"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-    {
-        "id": "seed_50",
-        "rem": "Житомирський",
-        "city": "місто Житомир",
-        "street": "майдан Житній Ринок",
-        "houses": ["1", "2", "3", "4", "5"],
-        "queue": 62,
-        "queue_label": "6.2",
-        "note": "побутові споживачі",
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Russian <-> Ukrainian Street Name Synonyms & Normalization Dictionary
-# ---------------------------------------------------------------------------
-RUSSIAN_STREET_REPLACEMENTS: List[Tuple[str, str]] = [
+RUSSIAN_REPLACEMENTS: List[Tuple[str, str]] = [
     # Multi-word phrases
     ("большая бердичевская", "велика бердичівська"),
     ("малая бердичевская", "мала бердичівська"),
@@ -567,9 +36,47 @@ RUSSIAN_STREET_REPLACEMENTS: List[Tuple[str, str]] = [
     ("житний рынок", "житній ринок"),
     ("героев десантников", "героїв десантників"),
     ("героев чернобыля", "героїв чорнобиля"),
+    ("героев крут", "героїв крут"),
+    ("героев пожарных", "героїв пожежних"),
+    ("героев майдана", "героїв майдану"),
+    ("героев басараба", "героїв басараба"),
     ("святослава рихтера", "святослава ріхтера"),
+    ("новоград-волынский", "звягель"),
+    ("новоград волынский", "звягель"),
+    ("новоград", "звягель"),
+    ("володарск-волынский", "хорошів"),
+    ("червоноармейск", "пулини"),
     ("1 мая", "1 травня"),
-    # Single word replacements
+    # Settlements of Zhytomyr Oblast
+    ("бердичев", "бердичів"),
+    ("коростышев", "коростишів"),
+    ("олевск", "олевськ"),
+    ("радомышль", "радомишль"),
+    ("барановка", "баранівка"),
+    ("андрушевка", "андрушівка"),
+    ("хорошев", "хорошів"),
+    ("черняхов", "черняхів"),
+    ("чуднов", "чуднів"),
+    ("романов", "романів"),
+    ("попельня", "попільня"),
+    ("брусилов", "брусилів"),
+    ("пулины", "пулини"),
+    ("станишовка", "станишівка"),
+    ("заречаны", "зарічани"),
+    ("тетеревка", "тетерівка"),
+    ("глубочица", "глибочиця"),
+    ("олиевка", "оліївка"),
+    ("новогуйвинское", "новогуйвинське"),
+    ("озерное", "озерне"),
+    ("ивановка", "іванівка"),
+    ("сигуры", "сінгури"),
+    ("сингуры", "сінгури"),
+    ("пряжев", "пряжів"),
+    ("вересы", "вереси"),
+    ("левков", "левків"),
+    ("каменка", "кам'янка"),
+    ("солнечное", "сонячне"),
+    # Street names
     ("киевская", "київська"),
     ("киевский", "київський"),
     ("бердичевская", "бердичівська"),
@@ -581,7 +88,6 @@ RUSSIAN_STREET_REPLACEMENTS: List[Tuple[str, str]] = [
     ("победы", "перемоги"),
     ("мира", "миру"),
     ("независимости", "незалежності"),
-    ("кочерги", "кочерги"),
     ("восточная", "східна"),
     ("восточный", "східний"),
     ("хлебная", "хлібна"),
@@ -593,13 +99,12 @@ RUSSIAN_STREET_REPLACEMENTS: List[Tuple[str, str]] = [
     ("театральная", "театральна"),
     ("театральный", "театральний"),
     ("кафедральная", "кафедральна"),
-    ("соборная", "соборний"),
+    ("соборная", "соборна"),
     ("соборный", "соборний"),
     ("королева", "корольова"),
     ("грушевского", "грушевського"),
     ("шевченко", "шевченка"),
     ("острожских", "острозьких"),
-    ("богуна", "богуна"),
     ("мазепы", "мазепи"),
     ("рихтера", "ріхтера"),
     ("космонавтов", "космонавтів"),
@@ -609,8 +114,18 @@ RUSSIAN_STREET_REPLACEMENTS: List[Tuple[str, str]] = [
     ("селецкая", "селецька"),
     ("житомирская", "житомирська"),
     ("житомирский", "житомирський"),
-    ("житомир", "житомир"),
-    ("бердичев", "бердичів"),
+    ("европейская", "європейська"),
+    ("винницкая", "вінницька"),
+    ("центральная", "центральна"),
+    ("лесная", "лісова"),
+    ("садовая", "садова"),
+    ("школьная", "шкільна"),
+    ("молодежная", "молодіжна"),
+    ("вокзальная", "вокзальна"),
+    ("набережная", "набережна"),
+    ("гагарина", "гагаріна"),
+    ("чкалова", "чкалова"),
+    ("пушкина", "пушкіна"),
 ]
 
 ENDINGS_SUB: List[Tuple[str, str]] = [
@@ -618,46 +133,81 @@ ENDINGS_SUB: List[Tuple[str, str]] = [
     (r"ский\b", "ський"),
     (r"цкая\b", "цька"),
     (r"цкий\b", "цький"),
-    (r"ого\b", "ого"),
+    (r"овка\b", "івка"),
 ]
 
 ABBREVIATIONS_PATTERN = re.compile(
-    r"\b(вул|вулиця|ул|улица|пров|провулок|пер|переулок|пр-т|просп|проспект|майдан|пл|площа|площадь|м|місто|г|город|с|село|смт|буд|будинок|д|дом|кв)\b\.?",
+    r"(?:^|\b)(вул|вулиця|ул|улица|пров|провулок|пер|переулок|пр-т|просп|проспект|майдан|пл|площа|площадь|тупик|проїзд|лінія|м|місто|г|город|с|село|смт|селище|с/рада|буд|будинок|д|дом|кв|рем)(?:\.|\b)",
     re.IGNORECASE,
 )
 
 HOUSE_PATTERN = re.compile(
-    r"^\d+([а-яa-zіїєґ]|\/[0-9а-яa-zіїєґ]+|-[0-9а-яa-zіїєґ]+)?$", re.IGNORECASE
-)
-ORDINAL_PATTERN = re.compile(r"^\d+-(й|а|е|я|ій)$", re.IGNORECASE)
-STREET_TYPE_PATTERN = re.compile(
-    r"^(пров|провулок|пер|переулок|пр-т|просп|проспект|лінія|вул|вулиця|тупик|проїзд)\.?",
+    r"^\d+([а-яa-zіїєґ]|\/[0-9а-яa-zіїєґ-]+|-[0-9а-яa-zіїєґ]+)?$",
     re.IGNORECASE,
 )
-HOUSE_MARKER_PATTERN = re.compile(r"^(буд|будинок|д|дом|кв)\.?$", re.IGNORECASE)
+SINGLE_LETTER_SUFFIX_PATTERN = re.compile(r"^[а-яa-zіїєґ]$", re.IGNORECASE)
+ORDINAL_PATTERN = re.compile(r"^\d+-(й|а|е|я|ій)$", re.IGNORECASE)
+STREET_TYPE_PATTERN = re.compile(
+    r"^(пров|провулок|пер|переулок|пр-т|просп|проспект|лінія|вул|вулиця|тупик|проїзд|травня|березня|грудня|жовтня|серпня|січня|лютого|квітня|червня|липня|вересня|листопада|річчя)\.?",
+    re.IGNORECASE,
+)
+HOUSE_MARKER_PATTERN = re.compile(r"^(буд|будинок|д|дом|кв|№)\.?$", re.IGNORECASE)
 
-LATIN_TO_CYR_HOUSE = {"a": "а", "b": "б", "c": "в", "d": "г", "k": "к"}
+LATIN_TO_CYR_HOUSE = str.maketrans(
+    {
+        "a": "а",
+        "b": "б",
+        "c": "в",
+        "d": "г",
+        "e": "е",
+        "i": "і",
+        "k": "к",
+        "m": "м",
+        "o": "о",
+        "p": "р",
+        "x": "х",
+    }
+)
+
+HOUSE_SORT_RE = re.compile(r"^(\d+)(.*)$")
+HOUSE_BASE_DIGITS_RE = re.compile(r"^(\d+)")
 
 
 def canonical_house(house_str: str) -> str:
-    """Normalize house number string for comparison (lowercase, latin->cyr suffix)."""
-    h = house_str.strip().lower().replace(" ", "")
-    for lat, cyr in LATIN_TO_CYR_HOUSE.items():
-        h = h.replace(lat, cyr)
+    """
+    Normalizes a house number string for accurate comparison:
+    - '63-А', '63 А', '63А', '63a' -> '63а'
+    - '94/2' -> '94/2'
+    - '-5' -> '5', '42-' -> '42'
+    """
+    if not house_str:
+        return ""
+    h = house_str.strip().lower().translate(LATIN_TO_CYR_HOUSE)
+    h = h.replace(" ", "")
+    h = h.strip("-.,")
+    h = re.sub(r"^(\d+)-([а-яіїєґ]+)$", r"\1\2", h)
     return h
+
+
+def _house_sort_key(h: str) -> Tuple[int, int, str]:
+    s = h.strip().lstrip("-")
+    if not s or s.lower() == "б/н" or s.lower().startswith("тп"):
+        return (2, 999999, s.lower())
+    m = HOUSE_SORT_RE.match(s)
+    if m:
+        return (0, int(m.group(1)), m.group(2).strip(" -").lower())
+    return (1, 999999, s.lower())
 
 
 def normalize_text(text: str) -> str:
     """
-    Normalizes street / city text:
-    1. Lowercase.
-    2. Normalize apostrophes.
-    3. Dictionary replacements for Russian street names.
-    4. Adjective ending conversions (ская -> ська, etc.).
-    5. Russian letters (ы->и, э->е, ъ->'', ё->ьо).
-    6. Remove abbreviations (вул., м., буд., etc.).
-    7. Remove punctuation except internal hyphens / apostrophes.
-    8. Collapse whitespace.
+    Normalizes street / settlement text:
+    1. Lowercase & unify apostrophes.
+    2. Dictionary replacements for Russian street & settlement names.
+    3. Adjective ending conversions (ская -> ська, etc.).
+    4. Russian letters (ы->и, э->е, ъ->'', ё->ьо).
+    5. Strip address type abbreviations (вул., м., с., селище, буд., etc.).
+    6. Strip punctuation except internal hyphens / apostrophes.
     """
     if not text:
         return ""
@@ -665,7 +215,7 @@ def normalize_text(text: str) -> str:
     t = text.lower()
     t = re.sub(r"[’`ʼ\"]", "'", t)
 
-    for ru, ua in RUSSIAN_STREET_REPLACEMENTS:
+    for ru, ua in RUSSIAN_REPLACEMENTS:
         pattern = r"\b" + re.escape(ru) + r"\b"
         t = re.sub(pattern, ua, t)
 
@@ -681,13 +231,12 @@ def normalize_text(text: str) -> str:
 
 
 def fold_ukr(text: str) -> str:
-    """
-    Folds vowel differences (и/і/ї, е/є) and apostrophes for phonetic / fuzzy matching.
-    """
+    """Folds vowel variations (и/і/ї, е/є, г/ґ) and apostrophes for phonetic matching."""
     return (
         text.replace("і", "и")
         .replace("ї", "и")
         .replace("є", "е")
+        .replace("ґ", "г")
         .replace("'", "")
         .replace("`", "")
         .replace("-", " ")
@@ -696,14 +245,14 @@ def fold_ukr(text: str) -> str:
 
 def parse_search_query(raw_query: str) -> Tuple[List[str], Optional[str]]:
     """
-    Extracts text tokens and house number from raw search query.
-    Examples:
-      'Київська 21' -> (['київська'], '21')
-      'м. Житомир, вул. Велика Бердичівська, 15а' -> (['житомир', 'велика', 'бердичівська'], '15а')
-      'киевская' -> (['київська'], None)
-      'Чуднівська 104' -> (['чуднівська'], '104')
-      'Бердичів Житомирська 131' -> (['бердичів', 'житомирська'], '131')
-      '1 пров. Калиновий 5' -> (['1', 'калиновий'], '5')
+    Extracts normalized text tokens and optional house number from raw search query.
+    Handles:
+      - 'Київська 21' -> (['київська'], '21')
+      - 'Київська 63-а' -> (['київська'], '63-а')
+      - 'Київська 63 а' -> (['київська'], '63а')
+      - 'м. Житомир, вул. Велика Бердичівська, 15/1' -> (['житомир', 'велика', 'бердичівська'], '15/1')
+      - 'Бердичів Житомирська 131' -> (['бердичів', 'житомирська'], '131')
+      - '1 пров. Калиновий 5' -> (['1', 'калиновий'], '5')
     """
     cleaned = raw_query.replace(",", " ").replace(";", " ")
     parts = cleaned.split()
@@ -716,19 +265,38 @@ def parse_search_query(raw_query: str) -> Tuple[List[str], Optional[str]]:
         token = parts[i]
         next_token = parts[i + 1] if i + 1 < len(parts) else ""
 
-        # Case: "буд. 15" or "дом 21"
+        # Explicit house marker: "буд. 15", "дом 21", "№ 14"
         if HOUSE_MARKER_PATTERN.match(token) and next_token:
-            house_token = next_token
-            i += 2
+            if (
+                i + 2 < len(parts)
+                and next_token.isdigit()
+                and SINGLE_LETTER_SUFFIX_PATTERN.match(parts[i + 2])
+            ):
+                house_token = f"{next_token}{parts[i + 2]}"
+                i += 3
+            else:
+                house_token = next_token
+                i += 2
             continue
 
         if HOUSE_PATTERN.match(token):
-            # Check if this is an ordinal for street name (e.g. "1 пров. Калиновий" or "1-й")
-            if ORDINAL_PATTERN.match(token) or (
-                STREET_TYPE_PATTERN.match(next_token) and token.isdigit()
+            is_last_token = i == len(parts) - 1
+            # Check if this number is part of the street name (e.g. "1 пров.", "1 Травня", "1-й пров.")
+            if not is_last_token and (
+                ORDINAL_PATTERN.match(token)
+                or (STREET_TYPE_PATTERN.match(next_token) and token.isdigit())
             ):
                 text_parts.append(token)
             else:
+                # Check if user wrote house with space before letter: "63 А"
+                if (
+                    token.isdigit()
+                    and next_token
+                    and SINGLE_LETTER_SUFFIX_PATTERN.match(next_token)
+                ):
+                    house_token = f"{token}{next_token}"
+                    i += 2
+                    continue
                 house_token = token
         else:
             text_parts.append(token)
@@ -741,54 +309,180 @@ def parse_search_query(raw_query: str) -> Tuple[List[str], Optional[str]]:
 
 
 # ---------------------------------------------------------------------------
-# In-Memory Index
+# In-Memory Index (Backed by Redis Cache & Live ZTOE Sync)
 # ---------------------------------------------------------------------------
 class IndexedRecord:
     __slots__ = (
         "raw",
+        "rem",
+        "city",
+        "street",
+        "queue_code",
+        "norm_rem",
         "norm_street",
         "norm_city",
-        "norm_full",
+        "street_folded",
+        "city_folded",
         "street_words",
-        "houses",
-        "houses_lower_map",
+        "street_folded_words",
+        "city_words",
+        "city_folded_words",
+        "houses_sorted",
+        "houses_preview",
         "houses_canon_map",
-        "is_zhytomyr",
+        "houses_base_map",
+        "is_zhytomyr_city",
+        "is_major_city",
+        "total_queues_for_street",
     )
 
-    def __init__(self, item: Dict[str, Any]):
+    def __init__(self, item: Dict[str, Any], total_queues_for_street: int = 1):
         self.raw = item
-        self.norm_street = normalize_text(item.get("street", ""))
-        self.norm_city = normalize_text(item.get("city", ""))
-        self.norm_full = f"{self.norm_city} {self.norm_street}".strip()
+        self.rem: str = item.get("rem", "").strip()
+        self.city: str = item.get("city", "").strip()
+        self.street: str = item.get("street", "").strip()
+        self.queue_code: int = int(item.get("queue", 11))
+        self.total_queues_for_street: int = total_queues_for_street
+
+        self.norm_rem = normalize_text(self.rem)
+        self.norm_street = normalize_text(self.street)
+        self.norm_city = normalize_text(self.city)
+
+        self.street_folded = fold_ukr(self.norm_street)
+        self.city_folded = fold_ukr(self.norm_city)
+
         self.street_words = self.norm_street.split()
+        self.street_folded_words = self.street_folded.split()
+        self.city_words = self.norm_city.split()
+        self.city_folded_words = self.city_folded.split()
 
         raw_houses: List[str] = item.get("houses", [])
-        self.houses = raw_houses
-        self.houses_lower_map: Dict[str, str] = {
-            h.strip().lower(): h.strip() for h in raw_houses if h.strip()
-        }
-        self.houses_canon_map: Dict[str, str] = {
-            canonical_house(h): h.strip() for h in raw_houses if h.strip()
-        }
-        self.is_zhytomyr = "житомир" in self.norm_city
+        unique_houses: Dict[str, None] = {}
+        for h in raw_houses:
+            hs = h.strip()
+            if hs:
+                unique_houses[hs] = None
+
+        sorted_houses = sorted(unique_houses.keys(), key=_house_sort_key)
+        self.houses_sorted = sorted_houses
+
+        real_houses = [h for h in sorted_houses if h.lower() != "б/н"]
+        preview_source = real_houses if real_houses else sorted_houses
+        preview_slice = preview_source[:14]
+        self.houses_preview = ", ".join(preview_slice) + (
+            "…" if len(preview_source) > 14 else ""
+        )
+
+        canon_map: Dict[str, str] = {}
+        base_map: Dict[str, str] = {}
+        for h in sorted_houses:
+            if h.lower() == "б/н":
+                continue
+            c = canonical_house(h)
+            if c and c not in canon_map:
+                canon_map[c] = h
+            m_base = HOUSE_BASE_DIGITS_RE.match(c)
+            if m_base:
+                b_num = m_base.group(1)
+                if b_num not in base_map:
+                    base_map[b_num] = h
+
+        self.houses_canon_map = canon_map
+        self.houses_base_map = base_map
+        self.is_zhytomyr_city = self.norm_city == "житомир"
+        self.is_major_city = self.city.lower().startswith(("місто ", "м."))
 
 
 _INDEXED_RECORDS: List[IndexedRecord] = []
+_LOCATIONS_CACHE: Dict[str, Any] = {
+    "rems": [],
+    "cities_by_rem": {},
+    "total_rems": 0,
+    "total_cities": 0,
+}
 _UPDATED_AT: Optional[str] = None
-_SOURCE: str = "fallback_seed"
+_SOURCE: str = "empty"
+_SYNC_LOCK: Optional[asyncio.Lock] = None
+
+
+def _get_sync_lock() -> asyncio.Lock:
+    global _SYNC_LOCK
+    if _SYNC_LOCK is None:
+        _SYNC_LOCK = asyncio.Lock()
+    return _SYNC_LOCK
+
+
+def _city_sort_key(city_name: str) -> Tuple[int, str]:
+    c_low = city_name.lower()
+    if c_low == "місто житомир":
+        return (0, c_low)
+    if c_low.startswith(("місто ", "м.")):
+        return (1, normalize_text(city_name))
+    if c_low.startswith(("селище ", "смт")):
+        return (2, normalize_text(city_name))
+    return (3, normalize_text(city_name))
+
+
+def _rem_sort_key(rem_name: str) -> Tuple[int, str]:
+    if rem_name == "Житомирський":
+        return (0, rem_name)
+    return (1, rem_name)
 
 
 def _set_indexed_addresses(
     items: List[Dict[str, Any]], updated_at: Optional[str], source: str
 ) -> None:
-    global _INDEXED_RECORDS, _UPDATED_AT, _SOURCE
-    _INDEXED_RECORDS = [IndexedRecord(item) for item in items]
+    global _INDEXED_RECORDS, _LOCATIONS_CACHE, _UPDATED_AT, _SOURCE
+
+    street_queue_counts = Counter(
+        (
+            item.get("rem", "").strip(),
+            item.get("city", "").strip(),
+            item.get("street", "").strip(),
+        )
+        for item in items
+    )
+
+    _INDEXED_RECORDS = [
+        IndexedRecord(
+            item,
+            total_queues_for_street=street_queue_counts[
+                (
+                    item.get("rem", "").strip(),
+                    item.get("city", "").strip(),
+                    item.get("street", "").strip(),
+                )
+            ],
+        )
+        for item in items
+    ]
     _UPDATED_AT = updated_at
     _SOURCE = source
+
+    cities_by_rem_sets: Dict[str, set] = {}
+    for rec in _INDEXED_RECORDS:
+        if rec.rem and rec.city:
+            cities_by_rem_sets.setdefault(rec.rem, set()).add(rec.city)
+
+    rems_sorted = sorted(cities_by_rem_sets.keys(), key=_rem_sort_key)
+    cities_by_rem = {
+        rem: sorted(cities_by_rem_sets[rem], key=_city_sort_key)
+        for rem in rems_sorted
+    }
+    total_cities = sum(len(v) for v in cities_by_rem.values())
+
+    _LOCATIONS_CACHE = {
+        "rems": rems_sorted,
+        "cities_by_rem": cities_by_rem,
+        "total_rems": len(rems_sorted),
+        "total_cities": total_cities,
+    }
+
     log.info(
-        "Addresses index updated: %d items loaded (source: %s, updated_at: %s)",
+        "Addresses index updated: %d items across %d REMs and %d settlements (source: %s, updated_at: %s)",
         len(_INDEXED_RECORDS),
+        len(rems_sorted),
+        total_cities,
         source,
         updated_at,
     )
@@ -798,369 +492,536 @@ def get_meta() -> Dict[str, Any]:
     """Returns metadata about the currently loaded address index."""
     return {
         "total_indexed": len(_INDEXED_RECORDS),
+        "total_rems": _LOCATIONS_CACHE.get("total_rems", 0),
+        "total_cities": _LOCATIONS_CACHE.get("total_cities", 0),
         "updated_at": _UPDATED_AT,
         "source": _SOURCE,
     }
 
 
-def _format_result(record: IndexedRecord, matched_house: Optional[str]) -> Dict[str, Any]:
+def get_locations() -> Dict[str, Any]:
+    """Returns all REMs and settlements grouped by REM for Zhytomyr Oblast."""
+    return _LOCATIONS_CACHE
+
+
+def _match_house_in_record(
+    rec: IndexedRecord, ht_canon: str, ht_base: str
+) -> Tuple[int, Optional[str]]:
+    """
+    Matches canonical house token against a record's houses.
+    Returns (tier, matched_house_display):
+      tier 2 = exact canonical house match (e.g. '21' == '21', '63а' == '63-А')
+      tier 1 = variant/base match (e.g. query '15' matches '15/1' or '15-А', NEVER '150';
+               or query '15а' matches base '15')
+      tier 0 = no match
+    """
+    if not ht_canon:
+        return 0, None
+
+    if ht_canon in rec.houses_canon_map:
+        return 2, rec.houses_canon_map[ht_canon]
+
+    if ht_base and ht_canon == ht_base:
+        if ht_base in rec.houses_base_map:
+            return 1, rec.houses_base_map[ht_base]
+
+    if ht_base and ht_canon != ht_base:
+        if ht_base in rec.houses_canon_map:
+            return 1, rec.houses_canon_map[ht_base]
+        if ht_base in rec.houses_base_map:
+            return 1, rec.houses_base_map[ht_base]
+
+    return 0, None
+
+
+def _format_result(
+    record: IndexedRecord, matched_house: Optional[str]
+) -> Dict[str, Any]:
     item = record.raw
-    houses_list = record.houses
-    preview_slice = houses_list[:12]
-    preview_str = ", ".join(preview_slice) + ("…" if len(houses_list) > 12 else "")
-    queue_code = item.get("queue", 11)
+    queue_code = record.queue_code
     queue_label = item.get(
-        "queue_label", QUEUE_LABELS.get(queue_code, f"{queue_code // 10}.{queue_code % 10}")
+        "queue_label",
+        QUEUE_LABELS.get(queue_code, f"{queue_code // 10}.{queue_code % 10}"),
     )
 
     return {
         "id": item.get("id"),
-        "rem": item.get("rem", ""),
-        "city": item.get("city", ""),
-        "street": item.get("street", ""),
-        "houses": houses_list,
-        "houses_preview": preview_str,
+        "rem": record.rem,
+        "city": record.city,
+        "street": record.street,
+        "houses": record.houses_sorted,
+        "houses_preview": record.houses_preview,
         "matched_house": matched_house,
         "queue": str(queue_code),
         "queue_label": str(queue_label),
+        "total_queues_for_street": record.total_queues_for_street,
         "note": item.get("note", "побутові споживачі"),
-        "display": f"{item.get('city', '')}, {item.get('street', '')}",
+        "display": f"{record.city}, {record.street}",
     }
 
 
-def search_addresses(query: str, limit: int = 15) -> List[Dict[str, Any]]:
+def search_addresses(
+    query: str = "",
+    limit: int = 15,
+    rem: str = "",
+    city: str = "",
+) -> List[Dict[str, Any]]:
     """
-    Smart address search with Google Maps-like capabilities:
-    - Autocomplete / prefix matching
-    - Ukrainian & Russian street name recognition
-    - Letter folding (и <-> і, е <-> є)
-    - Fuzzy matching via difflib.SequenceMatcher for typo tolerance
-    - House number resolution with scoring boost
-    - City prioritisation (Zhytomyr boost unless another city specified)
+    Smart address search across all REMs and settlements of Zhytomyr Oblast.
     """
-    clean_query = query.strip()
+    clean_query = (query or "").strip()
+    rem_filter = (rem or "").strip()
+    city_filter = (city or "").strip()
+
+    norm_rem_filter = normalize_text(rem_filter) if rem_filter else ""
+    norm_city_filter = normalize_text(city_filter) if city_filter else ""
+
+    pool: List[IndexedRecord] = []
+    for rec in _INDEXED_RECORDS:
+        if rem_filter:
+            if rec.rem.lower() != rem_filter.lower() and rec.norm_rem != norm_rem_filter:
+                continue
+        if city_filter:
+            if (
+                rec.city.lower() != city_filter.lower()
+                and rec.norm_city != norm_city_filter
+            ):
+                continue
+        pool.append(rec)
+
     if not clean_query:
-        # Return popular streets in Zhytomyr
+        if city_filter or rem_filter:
+            sorted_pool = sorted(
+                pool,
+                key=lambda r: (
+                    _city_sort_key(r.city),
+                    0
+                    if r.street.lower().startswith(
+                        ("вул", "пров", "просп", "майдан", "пл")
+                    )
+                    else 1,
+                    r.norm_street,
+                    r.queue_code,
+                ),
+            )
+            return [_format_result(rec, None) for rec in sorted_pool[:limit]]
+
         top = [
-            _format_result(rec, None)
-            for rec in _INDEXED_RECORDS
-            if rec.is_zhytomyr
+            _format_result(rec, None) for rec in pool if rec.is_zhytomyr_city
         ][:limit]
         if len(top) < limit:
             remaining = [
-                _format_result(rec, None)
-                for rec in _INDEXED_RECORDS
-                if not rec.is_zhytomyr
+                _format_result(rec, None) for rec in pool if not rec.is_zhytomyr_city
             ][: (limit - len(top))]
             top.extend(remaining)
         return top
 
     text_tokens, house_token = parse_search_query(clean_query)
-    query_norm = normalize_text(clean_query)
-    query_folded = fold_ukr(query_norm)
+    ht_canon = canonical_house(house_token) if house_token else ""
+    m_base = HOUSE_BASE_DIGITS_RE.match(ht_canon) if ht_canon else None
+    ht_base = m_base.group(1) if m_base else ""
 
-    # Detect if user specifically queried another city
-    city_keywords = ["бердичів", "коростень", "звягель", "новоград", "малин", "коростишів", "станишівка"]
-    city_explicit = any(ck in query_norm for ck in city_keywords)
+    tokens_folded = [fold_ukr(tok) for tok in text_tokens]
+    num_tokens = len(text_tokens)
 
-    candidates: List[Tuple[float, IndexedRecord, Optional[str]]] = []
+    raw_candidates: List[Tuple[float, int, Optional[str], IndexedRecord]] = []
 
-    for rec in _INDEXED_RECORDS:
-        score = 0.0
-        norm_street = rec.norm_street
-        norm_city = rec.norm_city
-        street_folded = fold_ukr(norm_street)
-        city_folded = fold_ukr(norm_city)
+    for rec in pool:
+        base_score = 0.0
 
-        # 1. Match against street name
-        if norm_street.startswith(query_norm) or (text_tokens and norm_street.startswith(text_tokens[0])):
-            score += 100.0
-        elif street_folded.startswith(query_folded) or (text_tokens and street_folded.startswith(fold_ukr(text_tokens[0]))):
-            score += 90.0
+        if num_tokens > 0:
+            street_exact_hits = 0
+            street_prefix_hits = 0
+            city_exact_hits = 0
+            city_prefix_hits = 0
+            fuzzy_hits = 0
+            unmatched_tokens = 0
 
-        # Check each text token
-        matched_tokens = 0
-        partial_matched_tokens = 0
-
-        for token in text_tokens:
-            tok_fold = fold_ukr(token)
-            # Exact substring match in street
-            if token in norm_street or tok_fold in street_folded:
-                matched_tokens += 1
-            # Match in city
-            elif token in norm_city or tok_fold in city_folded:
-                matched_tokens += 1
-            else:
-                # Fuzzy matching against street words
-                fuzzy_found = False
-                for sword in rec.street_words:
-                    sword_fold = fold_ukr(sword)
-                    if sword.startswith(token) or sword_fold.startswith(tok_fold):
-                        fuzzy_found = True
-                        break
-                    ratio = max(
-                        difflib.SequenceMatcher(None, token, sword).ratio(),
-                        difflib.SequenceMatcher(None, tok_fold, sword_fold).ratio(),
+            for idx, tok in enumerate(text_tokens):
+                tok_f = tokens_folded[idx]
+                is_street_exact = (
+                    tok in rec.street_words or tok_f in rec.street_folded_words
+                )
+                is_city_exact = (
+                    tok in rec.city_words or tok_f in rec.city_folded_words
+                )
+                is_street_prefix = not is_street_exact and any(
+                    sw.startswith(tok) or sw_f.startswith(tok_f)
+                    for sw, sw_f in zip(rec.street_words, rec.street_folded_words)
+                )
+                is_city_prefix = (
+                    not is_city_exact
+                    and len(tok) >= 3
+                    and any(
+                        cw.startswith(tok) or cw_f.startswith(tok_f)
+                        for cw, cw_f in zip(rec.city_words, rec.city_folded_words)
                     )
-                    if ratio >= 0.72:
-                        fuzzy_found = True
-                        break
-                if fuzzy_found:
-                    partial_matched_tokens += 1
+                )
 
-        if text_tokens:
-            if matched_tokens == len(text_tokens):
-                score += 70.0
-            elif (matched_tokens + partial_matched_tokens) == len(text_tokens):
-                score += 40.0
-            elif matched_tokens > 0:
-                score += 20.0
+                if is_street_exact:
+                    street_exact_hits += 1
+                elif is_city_exact:
+                    city_exact_hits += 1
+                elif is_street_prefix:
+                    street_prefix_hits += 1
+                elif is_city_prefix:
+                    city_prefix_hits += 1
+                else:
+                    matched_fuzzy = False
+                    if len(tok) >= 4:
+                        for sw, sw_f in zip(rec.street_words, rec.street_folded_words):
+                            if len(sw) < 3:
+                                continue
+                            ratio = max(
+                                difflib.SequenceMatcher(None, tok, sw).ratio(),
+                                difflib.SequenceMatcher(None, tok_f, sw_f).ratio(),
+                            )
+                            if ratio >= 0.76:
+                                fuzzy_hits += 1
+                                matched_fuzzy = True
+                                break
+                    if not matched_fuzzy and len(tok) >= 4:
+                        for cw, cw_f in zip(rec.city_words, rec.city_folded_words):
+                            if len(cw) < 3:
+                                continue
+                            ratio = max(
+                                difflib.SequenceMatcher(None, tok, cw).ratio(),
+                                difflib.SequenceMatcher(None, tok_f, cw_f).ratio(),
+                            )
+                            if ratio >= 0.78:
+                                fuzzy_hits += 1
+                                matched_fuzzy = True
+                                break
+                    if not matched_fuzzy:
+                        unmatched_tokens += 1
+
+            if unmatched_tokens > 0:
+                if num_tokens <= 2 or unmatched_tokens > 1:
+                    continue
+                base_score -= 40.0
+
+            base_score += street_exact_hits * 95.0
+            base_score += street_prefix_hits * 70.0
+            base_score += fuzzy_hits * 35.0
+
+            base_score += city_exact_hits * 85.0
+            base_score += city_prefix_hits * 55.0
+
+            if (city_exact_hits + city_prefix_hits) > 0 and (
+                street_exact_hits + street_prefix_hits
+            ) > 0:
+                base_score += 110.0
+
+            if (street_exact_hits + street_prefix_hits) > 0:
+                first_street_word = rec.street_words[0] if rec.street_words else ""
+                first_street_fold = (
+                    rec.street_folded_words[0] if rec.street_folded_words else ""
+                )
+                if any(
+                    first_street_word == t or first_street_fold == tf
+                    for t, tf in zip(text_tokens, tokens_folded)
+                ):
+                    base_score += 35.0
+                elif any(
+                    first_street_word.startswith(t) or first_street_fold.startswith(tf)
+                    for t, tf in zip(text_tokens, tokens_folded)
+                ):
+                    base_score += 20.0
+                base_score -= min(len(rec.street_words), 5) * 2.0
             else:
-                # No text token matched this record
-                continue
+                if rec.street.lower().startswith(
+                    ("вул", "пров", "просп", "майдан", "пл")
+                ):
+                    base_score += 15.0 + min(len(rec.houses_canon_map), 25) * 0.4
+                else:
+                    base_score -= 20.0
 
-        # Zhytomyr bonus
-        if not city_explicit and rec.is_zhytomyr:
-            score += 30.0
+            if (
+                not city_filter
+                and (city_exact_hits == 0 and city_prefix_hits == 0)
+            ):
+                if rec.is_zhytomyr_city:
+                    base_score += 28.0
+                elif rec.is_major_city:
+                    base_score += 12.0
 
-        # House number resolution
+        house_tier = 0
         matched_house: Optional[str] = None
-        if house_token:
-            ht_canon = canonical_house(house_token)
-            if ht_canon in rec.houses_canon_map:
-                score += 150.0
-                matched_house = rec.houses_canon_map[ht_canon]
-            else:
-                # Prefix matching for house numbers (e.g. "15" -> "15а")
-                for h_can, h_orig in rec.houses_canon_map.items():
-                    if h_can.startswith(ht_canon):
-                        score += 80.0
-                        matched_house = h_orig
-                        break
+        if ht_canon:
+            house_tier, matched_house = _match_house_in_record(rec, ht_canon, ht_base)
+            if num_tokens == 0 and house_tier == 0:
+                continue
+            if house_tier == 2:
+                base_score += 250.0
+            elif house_tier == 1:
+                base_score += 140.0
 
-        if score > 0:
-            candidates.append((score, rec, matched_house))
+        if base_score > 0:
+            raw_candidates.append((base_score, house_tier, matched_house, rec))
 
-    # Sort: highest score first, then Zhytomyr priority, then street name
-    candidates.sort(
-        key=lambda c: (c[0], 1 if c[1].is_zhytomyr else 0, -len(c[1].street_words)),
+    if ht_canon and raw_candidates:
+        best_tier_by_street: Dict[Tuple[str, str, str], int] = {}
+        for _, h_tier, _, rec in raw_candidates:
+            key = (rec.rem, rec.city, rec.street)
+            if h_tier > best_tier_by_street.get(key, 0):
+                best_tier_by_street[key] = h_tier
+
+        filtered_candidates: List[Tuple[float, int, Optional[str], IndexedRecord]] = []
+        for score, h_tier, m_house, rec in raw_candidates:
+            key = (rec.rem, rec.city, rec.street)
+            max_tier = best_tier_by_street.get(key, 0)
+            if max_tier > 0 and h_tier < max_tier:
+                continue
+            filtered_candidates.append((score, h_tier, m_house, rec))
+        raw_candidates = filtered_candidates
+
+    raw_candidates.sort(
+        key=lambda c: (
+            c[0],
+            c[1],
+            1 if c[3].is_zhytomyr_city else (0.5 if c[3].is_major_city else 0),
+            -c[3].queue_code,
+        ),
         reverse=True,
     )
 
-    results = [_format_result(rec, mh) for _, rec, mh in candidates[:limit]]
-    return results
+    return [_format_result(rec, mh) for _, _, mh, rec in raw_candidates[:limit]]
 
 
 # ---------------------------------------------------------------------------
-# Scraping from ztoe.com.ua
+# Redis Cache + Live Scraping from ztoe.com.ua
 # ---------------------------------------------------------------------------
+def _is_cache_expired(updated_at: Optional[str]) -> bool:
+    """Checks whether the cached updated_at timestamp is missing or older than 12 hours."""
+    if not updated_at:
+        return True
+    try:
+        dt = datetime.fromisoformat(updated_at)
+    except ValueError:
+        try:
+            dt = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return True
+    age = (datetime.now() - dt).total_seconds()
+    return age >= CACHE_MAX_AGE_SECONDS
+
+
+async def _load_from_redis() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Reads cached addresses payload from Redis if available."""
+    redis_client = redis_un.get_redis_client()
+    if not redis_client:
+        return None, None
+    try:
+        raw = await redis_client.get(REDIS_ADDRESSES_KEY)
+        if not raw:
+            return None, None
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            items = data.get("items")
+            updated_at = data.get("updated_at")
+            if isinstance(items, list) and len(items) > 0:
+                return items, updated_at
+    except Exception as exc:
+        log.warning("Failed to load addresses cache from Redis: %s", exc)
+    return None, None
+
+
+async def _save_to_redis(records: List[Dict[str, Any]], updated_at: str) -> bool:
+    """Persists parsed addresses and timestamp into Redis."""
+    redis_client = redis_un.get_redis_client()
+    if not redis_client:
+        return False
+    try:
+        payload = json.dumps(
+            {
+                "updated_at": updated_at,
+                "source": "ztoe_live",
+                "items": records,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        await redis_client.set(REDIS_ADDRESSES_KEY, payload)
+        log.info("Saved %d addresses to Redis (updated_at: %s)", len(records), updated_at)
+        return True
+    except Exception as exc:
+        log.warning("Failed to save addresses to Redis: %s", exc)
+        return False
+
+
 async def sync_addresses_from_ztoe() -> bool:
     """
-    Downloads addresses from https://www.ztoe.com.ua/unhooking-search.php?pidcherga_id={1..12}
-    Decodes windows-1251 table and groups entries by queue.
-    Saves to data/addresses.json and updates in-memory index.
+    Downloads addresses from https://www.ztoe.com.ua/unhooking-search.php?pidcherga_id={1..12}.
+    If ZTOE is available, updates the in-memory index and saves to Redis.
+    If ZTOE is unavailable, leaves the existing Redis cache and in-memory index untouched.
     """
-    log.info("Starting addresses synchronization from ztoe.com.ua...")
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
-    }
-    timeout = aiohttp.ClientTimeout(total=45)
+    lock = _get_sync_lock()
+    if lock.locked():
+        async with lock:
+            return bool(_INDEXED_RECORDS)
 
-    grouped_addresses: Dict[Tuple[str, str, str, int, str], Dict[str, None]] = {}
-    total_parsed_rows = 0
+    async with lock:
+        log.info("Starting full oblast addresses synchronization from ztoe.com.ua...")
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "uk-UA,uk;q=0.9,en;q=0.8",
+        }
+        timeout = aiohttp.ClientTimeout(total=60)
+        connector = aiohttp.TCPConnector(ssl=False)
+        sem = asyncio.Semaphore(4)
 
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            for pidcherga_id in range(1, 13):
-                url = f"https://www.ztoe.com.ua/unhooking-search.php?pidcherga_id={pidcherga_id}"
+        async def fetch_pidcherga(
+            session: aiohttp.ClientSession, pidcherga_id: int
+        ) -> List[Tuple[str, str, str, int, List[str]]]:
+            url = f"https://www.ztoe.com.ua/unhooking-search.php?pidcherga_id={pidcherga_id}"
+            async with sem:
                 try:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status != 200:
-                            log.warning("ZTOE responded with status %s for %s", resp.status, url)
-                            continue
+                            log.warning(
+                                "ZTOE responded with status %s for %s", resp.status, url
+                            )
+                            return []
                         raw_bytes = await resp.read()
                         html = raw_bytes.decode("cp1251", errors="ignore")
                 except Exception as req_err:
-                    log.warning("Error fetching ZTOE pidcherga %s: %s", pidcherga_id, req_err)
+                    log.warning(
+                        "Error fetching ZTOE pidcherga %s: %s", pidcherga_id, req_err
+                    )
+                    return []
+
+            soup = BeautifulSoup(html, "html.parser")
+            target_table = None
+            for tbl in soup.find_all("table"):
+                if tbl.find("table"):
+                    continue
+                first_tr = tbl.find("tr")
+                if first_tr and "Населений пункт" in first_tr.get_text():
+                    target_table = tbl
+                    break
+
+            if not target_table:
+                log.warning(
+                    "No innermost address table found for pidcherga %s", pidcherga_id
+                )
+                return []
+
+            parsed_rows: List[Tuple[str, str, str, int, List[str]]] = []
+            for row in target_table.find_all("tr")[1:]:
+                tds = row.find_all("td")
+                if len(tds) < 6:
                     continue
 
-                soup = BeautifulSoup(html, "html.parser")
-                tables = soup.find_all("table")
-                target_table = None
-                for tbl in tables:
-                    txt = tbl.get_text()
-                    if "Населений пункт" in txt or "Назва вулиці" in txt:
-                        target_table = tbl
-                        break
-                if target_table is None and tables:
-                    target_table = tables[0]
+                rem = tds[0].get_text(strip=True)
+                city = tds[1].get_text(strip=True)
+                street = tds[2].get_text(strip=True)
+                houses_raw = tds[3].get_text(strip=True)
+                cherga_str = tds[4].get_text(strip=True)
+                pidcherga_str = tds[5].get_text(strip=True)
 
-                if not target_table:
-                    log.warning("No address table found for pidcherga %s", pidcherga_id)
+                if "РЕМ" in rem or "Населений пункт" in city:
                     continue
 
-                rows = target_table.find_all("tr")
-                for row in rows:
-                    tds = row.find_all("td")
-                    if len(tds) < 7:
-                        continue
+                if cherga_str.isdigit() and pidcherga_str.isdigit():
+                    queue_code = int(cherga_str) * 10 + int(pidcherga_str)
+                else:
+                    queue_code = tools.index_to_queue(pidcherga_id)
 
-                    rem = tds[0].get_text(strip=True)
-                    city = tds[1].get_text(strip=True)
-                    street = tds[2].get_text(strip=True)
-                    houses_raw = tds[3].get_text(strip=True)
-                    cherga_str = tds[4].get_text(strip=True)
-                    pidcherga_str = tds[5].get_text(strip=True)
-                    note = tds[6].get_text(strip=True)
+                raw_houses = [
+                    h.strip() for h in re.split(r"[,;]+", houses_raw) if h.strip()
+                ]
+                parsed_rows.append((rem, city, street, queue_code, raw_houses))
 
-                    # Skip table header
-                    if "РЕМ" in rem or "Населений пункт" in city:
-                        continue
+            return parsed_rows
 
-                    if cherga_str.isdigit() and pidcherga_str.isdigit():
-                        queue_code = int(cherga_str) * 10 + int(pidcherga_str)
-                    else:
-                        queue_code = tools.index_to_queue(pidcherga_id)
+        grouped_addresses: Dict[Tuple[str, str, str, int], Dict[str, None]] = {}
 
-                    raw_houses = [
-                        h.strip()
-                        for h in re.split(r"[,;]+", houses_raw)
-                        if h.strip()
-                    ]
-
-                    group_key = (rem, city, street, queue_code, note or "побутові споживачі")
-                    if group_key not in grouped_addresses:
-                        grouped_addresses[group_key] = {}
-                    for h in raw_houses:
-                        grouped_addresses[group_key][h] = None
-                    total_parsed_rows += 1
-
-                await asyncio.sleep(0.3)
-
-    except Exception as exc:
-        log.warning("sync_addresses_from_ztoe encountered an unexpected error: %s", exc)
-
-    if len(grouped_addresses) < 50:
-        log.warning(
-            "Parsed only %d address records from ZTOE (threshold is 50). Keeping existing index.",
-            len(grouped_addresses),
-        )
-        return False
-
-    records: List[Dict[str, Any]] = []
-    for idx, ((rem, city, street, queue_code, note), houses_dict) in enumerate(
-        grouped_addresses.items(), start=1
-    ):
-        houses_list = list(houses_dict.keys())
-        queue_lbl = QUEUE_LABELS.get(
-            queue_code, f"{queue_code // 10}.{queue_code % 10}"
-        )
-        records.append(
-            {
-                "id": f"ztoe_{idx}",
-                "rem": rem,
-                "city": city,
-                "street": street,
-                "houses": houses_list,
-                "queue": queue_code,
-                "queue_label": queue_lbl,
-                "note": note,
-            }
-        )
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    payload = {
-        "updated_at": now_str,
-        "source": "ztoe_live",
-        "items": records,
-    }
-
-    try:
-        os.makedirs(os.path.dirname(ADDRESSES_FILE), exist_ok=True)
-        with open(ADDRESSES_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        log.info("Saved %d addresses to %s", len(records), ADDRESSES_FILE)
-    except Exception as save_err:
-        log.warning("Failed to save addresses to %s: %s", ADDRESSES_FILE, save_err)
-
-    _set_indexed_addresses(records, updated_at=now_str, source="ztoe_live")
-
-    # Sync to Redis if available
-    try:
-        redis_client = redis_un.get_redis_client()
-        if redis_client:
-            await redis_client.set(
-                "ztoe_addresses_cache", json.dumps(payload, ensure_ascii=False)
+        try:
+            async with aiohttp.ClientSession(
+                timeout=timeout, connector=connector
+            ) as session:
+                results = await asyncio.gather(
+                    *(fetch_pidcherga(session, pid) for pid in range(1, 13))
+                )
+                for pid_rows in results:
+                    for rem, city, street, queue_code, raw_houses in pid_rows:
+                        group_key = (rem, city, street, queue_code)
+                        if group_key not in grouped_addresses:
+                            grouped_addresses[group_key] = {}
+                        for h in raw_houses:
+                            grouped_addresses[group_key][h] = None
+        except Exception as exc:
+            log.warning(
+                "sync_addresses_from_ztoe encountered an unexpected error: %s", exc
             )
-            log.info("Saved addresses cache to Redis")
-    except Exception as redis_err:
-        log.warning("Failed to save addresses to Redis: %s", redis_err)
 
-    return True
+        if len(grouped_addresses) < 100:
+            log.warning(
+                "ZTOE website unavailable or returned incomplete data (%d records). "
+                "Keeping existing Redis cache untouched.",
+                len(grouped_addresses),
+            )
+            return False
+
+        records: List[Dict[str, Any]] = []
+        for idx, ((rem, city, street, queue_code), houses_dict) in enumerate(
+            grouped_addresses.items(), start=1
+        ):
+            houses_list = list(houses_dict.keys())
+            queue_lbl = QUEUE_LABELS.get(
+                queue_code, f"{queue_code // 10}.{queue_code % 10}"
+            )
+            records.append(
+                {
+                    "id": idx,
+                    "rem": rem,
+                    "city": city,
+                    "street": street,
+                    "houses": houses_list,
+                    "queue": queue_code,
+                    "queue_label": queue_lbl,
+                }
+            )
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _set_indexed_addresses(records, updated_at=now_str, source="ztoe_live")
+        await _save_to_redis(records, now_str)
+        return True
 
 
 async def ensure_addresses_loaded() -> None:
     """
-    Ensures address data is loaded in memory.
-    If addresses.json exists and is fresh (< 12 hours), loads it.
-    If missing or older than 12h, and ONLINE is enabled, triggers sync_addresses_from_ztoe().
+    Startup & on-demand loader:
+    1. Checks if Redis has cached addresses ('ztoe_addresses_cache').
+    2. If found in Redis:
+       - Immediately loads them into memory.
+       - Checks the cache date ('updated_at'): if older than 12 hours, fetches fresh
+         data from ztoe.com.ua (and if the site is down, keeps the Redis cache).
+    3. If NOT found in Redis:
+       - Immediately parses ztoe.com.ua and saves the result to Redis.
     """
-    online = os.getenv("ONLINE", "false").lower() == "true"
-    needs_sync = False
+    items, updated_at = await _load_from_redis()
 
-    if os.path.exists(ADDRESSES_FILE):
-        try:
-            mtime = os.path.getmtime(ADDRESSES_FILE)
-            age = (datetime.now() - datetime.fromtimestamp(mtime)).total_seconds()
-            if age > 43200:  # 12 hours
-                needs_sync = True
-            with open(ADDRESSES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                items = data.get("items", [])
-                if items:
-                    _set_indexed_addresses(
-                        items,
-                        updated_at=data.get("updated_at"),
-                        source=data.get("source", "cache_file"),
-                    )
-        except Exception as read_err:
-            log.warning("Failed reading %s: %s", ADDRESSES_FILE, read_err)
-            needs_sync = True
+    if items:
+        _set_indexed_addresses(items, updated_at=updated_at, source="redis_cache")
+        if _is_cache_expired(updated_at):
+            log.info(
+                "Redis address cache is outdated (updated_at=%s). Fetching fresh data from ZTOE...",
+                updated_at,
+            )
+            await sync_addresses_from_ztoe()
+        else:
+            log.info(
+                "Loaded fresh address cache from Redis (%d records, updated_at=%s)",
+                len(items),
+                updated_at,
+            )
     else:
-        needs_sync = True
-
-    if online and needs_sync:
-        log.info("Addresses cache is outdated or missing; starting background sync...")
+        log.info(
+            "No addresses found in Redis cache. Parsing ztoe.com.ua immediately..."
+        )
         await sync_addresses_from_ztoe()
-
-
-def _init_sync() -> None:
-    """
-    Synchronous initialisation at module import time to guarantee
-    immediate readiness before any async tasks or lifespan runs.
-    """
-    if os.path.exists(ADDRESSES_FILE):
-        try:
-            with open(ADDRESSES_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                items = data.get("items", [])
-                if items:
-                    _set_indexed_addresses(
-                        items,
-                        updated_at=data.get("updated_at"),
-                        source=data.get("source", "cache_file"),
-                    )
-                    return
-        except Exception as exc:
-            log.warning("Could not pre-load %s: %s", ADDRESSES_FILE, exc)
-
-    _set_indexed_addresses(FALLBACK_ADDRESSES, updated_at=None, source="fallback_seed")
-
-
-# Immediate synchronous initialization on import
-_init_sync()
