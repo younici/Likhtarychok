@@ -216,6 +216,24 @@ async def _process_queue_schedule(queue: int, status: list[int] | None, now: dat
                 break
 
             prev_state = state
+
+        next_slot = current_slot + 1
+        if next_slot < 48 and next_slot < len(status):
+            if int(bool(status[current_slot])) == 1 and int(bool(status[next_slot])) == 0:
+                target_hour = next_slot // 2
+                target_minute = 30 if next_slot % 2 else 0
+                on_slot_id = f"{_slot_key(now.date(), queue, target_hour, target_minute)}-on"
+
+                if on_slot_id not in notified_slots:
+                    await send_push_all(
+                        title="Скоро увімкнуть світло",
+                        body=(
+                            f"Світло увімкнуть через пів години у "
+                            f"{target_hour:02d}:{target_minute:02d} по черзі {queue_lbl}."
+                        ),
+                        queue=queue,
+                    )
+                    notified_slots.add(on_slot_id)
         return
 
     current_hour = now.hour
@@ -232,6 +250,16 @@ async def _process_queue_schedule(queue: int, status: list[int] | None, now: dat
             queue=queue,
         )
         notified_slots.add(slot_id)
+
+    if current_state == 1 and next_state == 0 and now.minute >= 30:
+        on_slot_id = f"{_slot_key(now.date(), queue, next_hour, 0)}-on"
+        if on_slot_id not in notified_slots:
+            await send_push_all(
+                title="Скоро увімкнуть світло",
+                body=f"Світло увімкнуть через пів години у {next_hour:02d}:00 по черзі {queue_lbl}.",
+                queue=queue,
+            )
+            notified_slots.add(on_slot_id)
 
 async def send_push_all(title: str, body: str, queue: int):
     target_queue = subcription.queue_code_from_input(queue)

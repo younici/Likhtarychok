@@ -1,8 +1,10 @@
 import { useId } from "react";
 
-function CandleIcon({ size = 26, className }) {
+export default function CandleIcon({ size = 26, className }) {
   const id = useId();
-  const flameId = `${id}-flame`;
+  const bodyGradId = `${id}-body`;
+  const headGradId = `${id}-head`;
+  const beamGradId = `${id}-beam`;
 
   return (
     <svg
@@ -14,21 +16,53 @@ function CandleIcon({ size = 26, className }) {
       aria-hidden="true"
     >
       <defs>
-        <linearGradient id={id} x1="6" y1="4" x2="26" y2="30" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#ffca6b" />
-          <stop offset="1" stopColor="#ff9d42" />
+        <linearGradient id={bodyGradId} x1="6" y1="26" x2="20" y2="12" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#ff9d42" />
+          <stop offset="1" stopColor="#ffd166" />
         </linearGradient>
-        <linearGradient id={flameId} x1="16" y1="2" x2="16" y2="13" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#fff3c4" />
-          <stop offset="1" stopColor="#ff9d42" />
+        <linearGradient id={headGradId} x1="14" y1="18" x2="23" y2="9" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#ffe28a" />
+          <stop offset="1" stopColor="#ffae42" />
+        </linearGradient>
+        <linearGradient id={beamGradId} x1="19" y1="13" x2="30" y2="2" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#fff5cc" stopOpacity="0.95" />
+          <stop offset="0.55" stopColor="#ffc94a" stopOpacity="0.45" />
+          <stop offset="1" stopColor="#ffc94a" stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d="M16 2.5c3 3.2 4 5.4 4 7.3a4 4 0 0 1-8 0c0-1.9 1-4.1 4-7.3Z" fill={`url(#${flameId})`} />
-      <path d="M16 14v2.5" stroke="#fff3c4" strokeWidth="1.6" strokeLinecap="round" />
-      <rect x="11" y="16" width="10" height="13" rx="2" fill={`url(#${id})`} />
-      <rect x="9" y="28" width="14" height="2" rx="1" fill={`url(#${id})`} />
+
+      {/* Warm light beam cone */}
+      <path
+        d="M18.5 9.2L27.5 2.2C29.2 3.4 30.1 4.8 29.8 6.5L22.8 13.5L18.5 9.2Z"
+        fill={`url(#${beamGradId})`}
+      />
+
+      {/* Flashlight angled group (-45 deg around center) */}
+      <g transform="rotate(-45 16 16)">
+        {/* Tail cap */}
+        <rect x="4" y="13" width="3" height="6" rx="1.5" fill="#d97724" />
+
+        {/* Main handle body */}
+        <rect x="6.5" y="12.5" width="9.5" height="7" rx="1.8" fill={`url(#${bodyGradId})`} />
+
+        {/* Grip ribs */}
+        <line x1="9" y1="13.8" x2="9" y2="18.2" stroke="#7a3e08" strokeOpacity="0.35" strokeWidth="1" strokeLinecap="round" />
+        <line x1="11" y1="13.8" x2="11" y2="18.2" stroke="#7a3e08" strokeOpacity="0.35" strokeWidth="1" strokeLinecap="round" />
+
+        {/* Power button indicator */}
+        <circle cx="13.8" cy="16" r="1.2" fill="#07090f" fillOpacity="0.45" />
+        <circle cx="13.8" cy="16" r="0.75" fill="#5ff5cb" />
+
+        {/* Flared reflector head */}
+        <path
+          d="M15.5 12.5L19.8 10.6C20.5 10.3 21.2 10.8 21.2 11.5V20.5C21.2 21.2 20.5 21.7 19.8 21.4L15.5 19.5V12.5Z"
+          fill={`url(#${headGradId})`}
+        />
+
+        {/* Glowing front lens */}
+        <rect x="20.6" y="10.8" width="2" height="10.4" rx="1" fill="#fff7d6" />
+      </g>
     </svg>
   );
 }
 
-export default CandleIcon;

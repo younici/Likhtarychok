@@ -1,223 +1,52 @@
-/* eslint-disable no-unused-vars */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import styles from "./Graph.module.css";
-import { fetchStatusFromZtoe, queueOptions, readCachedStatus } from "../../lib/ztoe";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { queueOptions } from '../../lib/ztoe.js';
+import {
+  fetchVapidPublicKey,
+  loadQueueStatus,
+  subscribeWebPush,
+  unsubscribeWebPush,
+} from '../../lib/api.js';
+import ClockDial from './ClockDial.jsx';
+import AddressSearch from './AddressSearch.jsx';
+import styles from './Graph.module.css';
 
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 const defaultStatuses = Array(48).fill(false);
 
-const apiBase =
-  import.meta.env.API_BASE_PATH ||
-  import.meta.env.VITE_API_BASE ||
-  import.meta.env.VITE_API_BASE_PATH ||
-  "";
-const grpcStatusEndpoint = `${apiBase}/grpc/StatusService/GetStatus`;
-
-const textEncoder = new TextEncoder();
-
-function encodeVarint(value) {
-  const bytes = [];
-  let v = value >>> 0;
-  while (v >= 0x80) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v);
-  return Uint8Array.from(bytes);
-}
-
-function decodeVarint(bytes, start = 0) {
-  let result = 0;
-  let shift = 0;
-  let pos = start;
-
-  while (pos < bytes.length) {
-    const byte = bytes[pos];
-    result |= (byte & 0x7f) << shift;
-    pos += 1;
-    if ((byte & 0x80) === 0) break;
-    shift += 7;
-  }
-
-  return [result, pos - start];
-}
-
-function encodeStatusRequest(queue = "") {
-  const queueBytes = textEncoder.encode(queue);
-  const lenBytes = encodeVarint(queueBytes.length);
-  const message = new Uint8Array(1 + lenBytes.length + queueBytes.length);
-  message[0] = 0x0a; // field 1, wire type 2
-  message.set(lenBytes, 1);
-  message.set(queueBytes, 1 + lenBytes.length);
-  return message;
-}
-
-function wrapGrpcWebMessage(messageBytes) {
-  const buffer = new Uint8Array(5 + messageBytes.length);
-  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-  buffer[0] = 0x00; // data frame
-  view.setUint32(1, messageBytes.length, false);
-  buffer.set(messageBytes, 5);
-  return buffer;
-}
-
-function unwrapGrpcWebMessage(buffer) {
-  const bytes = new Uint8Array(buffer);
-  if (bytes.length < 5) throw new Error("Invalid gRPC-web response");
-
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const isDataFrame = bytes[0] === 0x00 || bytes[0] === 0x01;
-  if (!isDataFrame) throw new Error("Unexpected gRPC-web frame");
-
-  const msgLength = view.getUint32(1, false);
-  const end = 5 + msgLength;
-  if (end > bytes.length) throw new Error("Truncated gRPC-web payload");
-
-  return bytes.slice(5, end);
-}
-
-function decodeStatusResponse(messageBytes) {
-  const result = [];
-  let pos = 0;
-
-  while (pos < messageBytes.length) {
-    const tag = messageBytes[pos];
-    pos += 1;
-    const field = tag >> 3;
-    const wireType = tag & 0x07;
-
-    if (field === 1 && wireType === 2) {
-      const [length, lenBytes] = decodeVarint(messageBytes, pos);
-      pos += lenBytes;
-      const end = pos + length;
-      while (pos < end) {
-        const [val, read] = decodeVarint(messageBytes, pos);
-        result.push(Boolean(val));
-        pos += read;
-      }
-    } else if (wireType === 0) {
-      const [, read] = decodeVarint(messageBytes, pos);
-      pos += read;
-    } else if (wireType === 2) {
-      const [length, lenBytes] = decodeVarint(messageBytes, pos);
-      pos += lenBytes + length;
-    } else {
-      break;
-    }
-  }
-
-  return result;
-}
-
-async function fetchStatusGrpc(queue) {
-  const message = encodeStatusRequest(queue ?? "");
-  const payload = wrapGrpcWebMessage(message);
-
-  const response = await fetch(grpcStatusEndpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/grpc-web+proto",
-      "X-Grpc-Web": "1",
-    },
-    body: payload,
-  });
-
-  if (!response.ok) throw new Error(`gRPC request failed (${response.status})`);
-
-  const buffer = await response.arrayBuffer();
-  const messageBytes = unwrapGrpcWebMessage(buffer);
-  return decodeStatusResponse(messageBytes);
-}
-
-/*
- * Роутер джерел даних: спершу API-сервер, далі — клієнтський парсинг сайту ЖОЕ,
- * і як остання лінія — збережений сьогоднішній графік з localStorage.
- */
-async function loadQueueStatus(queue) {
+function hasSavedQueueInStorage() {
+  if (typeof window === 'undefined') return false;
   try {
-    const data = await fetchStatusGrpc(queue);
-    if (data.length > 0) return { data, source: "api" };
+    const savedQ = localStorage.getItem('queueSelector');
+    if (savedQ && queueOptions.includes(savedQ)) return true;
+    const savedAddr = localStorage.getItem('savedUserAddress');
+    if (savedAddr) return true;
   } catch (_) {
-    /* падаємо на наступне джерело */
+    /* ignore */
   }
-
-  try {
-    const data = await fetchStatusFromZtoe(queue);
-    if (data?.length) return { data, source: "ztoe" };
-  } catch (_) {
-    /* падаємо на наступне джерело */
-  }
-
-  const cached = readCachedStatus(queue);
-  if (cached?.length) return { data: cached, source: "cache" };
-
-  return { data: [], source: "none" };
+  return false;
 }
-
-const sourceLabels = {
-  api: "Дані з нашого сервера",
-  ztoe: "Дані напряму з сайту ЖОЕ",
-  cache: "Збережена копія графіка",
-  none: "Немає з'єднання з джерелами",
-};
-
-const timeSlots = [
-  "00:00–01:00",
-  "01:00–02:00",
-  "02:00–03:00",
-  "03:00–04:00",
-  "04:00–05:00",
-  "05:00–06:00",
-  "06:00–07:00",
-  "07:00–08:00",
-  "08:00–09:00",
-  "09:00–10:00",
-  "10:00–11:00",
-  "11:00–12:00",
-  "12:00–13:00",
-  "13:00–14:00",
-  "14:00–15:00",
-  "15:00–16:00",
-  "16:00–17:00",
-  "17:00–18:00",
-  "18:00–19:00",
-  "19:00–20:00",
-  "20:00–21:00",
-  "21:00–22:00",
-  "22:00–23:00",
-  "23:00–24:00",
-];
-
-const lampOffSvg = (
-  <svg
-    viewBox="0 0 24 24"
-    width="22"
-    height="22"
-    stroke="currentColor"
-    fill="none"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M9 18h6" />
-    <path d="M10 21h4" />
-    <path d="M8 15a6 6 0 1 1 8 0l-1 1.5H9z" />
-    <line x1="5" y1="5" x2="19" y2="19" />
-  </svg>
-);
 
 function loadQueueFromStorage() {
-  if (typeof window === "undefined") return queueOptions[0];
-  const saved = localStorage.getItem("queueSelector") ?? queueOptions[0];
-  if (saved === "1" || saved === "0") return `3${Number(saved) + 1}`;
-  return queueOptions.includes(saved) ? saved : queueOptions[0];
+  if (typeof window === 'undefined') return '31';
+  try {
+    const saved = localStorage.getItem('queueSelector');
+    if (saved && queueOptions.includes(saved)) return saved;
+  } catch (_) {
+    /* ignore */
+  }
+  return '31';
 }
 
-function loadToggleFromStorage() {
-  if (typeof window === "undefined") return false;
-  return localStorage.getItem("queueToggle") === "true";
+function loadViewModeFromStorage() {
+  if (typeof window === 'undefined') return 'dial';
+  try {
+    const saved = localStorage.getItem('graphViewMode');
+    if (saved && ['dial', 'timeline', 'intervals'].includes(saved)) return saved;
+  } catch (_) {
+    /* ignore */
+  }
+  return 'dial';
 }
 
 function normalizeStatuses(data = []) {
@@ -248,10 +77,10 @@ function normalizeStatuses(data = []) {
 }
 
 function formatHalfHour(index) {
-  if (index >= 48) return "24:00";
+  if (index >= 48) return '24:00';
   const hours = Math.floor(index / 2);
-  const minutes = index % 2 === 0 ? "00" : "30";
-  return `${String(hours).padStart(2, "0")}:${minutes}`;
+  const minutes = index % 2 === 0 ? '00' : '30';
+  return `${String(hours).padStart(2, '0')}:${minutes}`;
 }
 
 function collectOutageRanges(statuses) {
@@ -273,64 +102,556 @@ function collectOutageRanges(statuses) {
   return ranges.map(({ start, end }) => ({
     start: formatHalfHour(start),
     end: formatHalfHour(end),
+    startIdx: start,
+    endIdx: end,
   }));
 }
 
+function getCurrentSlotIndex() {
+  const now = new Date();
+  return now.getHours() * 2 + (now.getMinutes() >= 30 ? 1 : 0);
+}
+
+function getCurrentMinutes() {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+}
+
 function urlBase64ToUint8Array(base64String) {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
   const rawData = atob(base64);
   const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; i += 1) outputArray[i] = rawData.charCodeAt(i);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
   return outputArray;
 }
 
-function Graph() {
-  const [queue, setQueue] = useState(() => loadQueueFromStorage());
-  const [useOutageView, setUseOutageView] = useState(() => loadToggleFromStorage());
-  const [statuses, setStatuses] = useState(defaultStatuses);
-  const [outageRanges, setOutageRanges] = useState([]);
-  const [hasData, setHasData] = useState(false);
-  const [publicKey, setPublicKey] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [source, setSource] = useState(null);
+const SOURCE_LABELS = {
+  api: { text: 'Сервер ✓', cls: 'api' },
+  ztoe: { text: 'ЖОЕ (резерв)', cls: 'ztoe' },
+  cache: { text: 'Кеш', cls: 'cache' },
+  none: { text: 'Нема даних', cls: 'none' },
+};
 
-  const queueLabel = `${queue[0]}.${queue[1]}`;
+const QUEUE_GROUPS = ['1', '2', '3', '4', '5', '6'];
+
+// ── SVG Timeline (Linear Scale) ──────────────────────────────────────────────
+
+function Timeline({ statuses, currentMinutes }) {
+  const svgRef = useRef(null);
+  const [svgWidth, setSvgWidth] = useState(840);
+  const [tooltip, setTooltip] = useState(null);
+  const HEIGHT = 60;
 
   useEffect(() => {
-    localStorage.setItem("queueSelector", queue);
-  }, [queue]);
+    const el = svgRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      setSvgWidth(entries[0].contentRect.width || 840);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
+  const segmentWidth = svgWidth / 48;
+  const needleX = (currentMinutes / 1440) * svgWidth;
+
+  const hourLabels = [];
+  for (let h = 0; h <= 24; h += 3) {
+    const x = (h / 24) * svgWidth;
+    hourLabels.push({ h, x });
+  }
+
+  function handleMouseMove(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relX = e.clientX - rect.left;
+    const idx = Math.floor((relX / svgWidth) * 48);
+    if (idx < 0 || idx > 47) {
+      setTooltip(null);
+      return;
+    }
+    const isOff = statuses[idx] ?? false;
+    const time = `${formatHalfHour(idx)}–${formatHalfHour(idx + 1)}`;
+    setTooltip({ x: relX, text: `${time}  ${isOff ? 'Відключення' : 'Є світло'}` });
+  }
+
+  return (
+    <div className={styles.timelineWrap}>
+      <svg
+        ref={svgRef}
+        className={styles.timelineSvg}
+        viewBox={`0 0 ${svgWidth} ${HEIGHT}`}
+        preserveAspectRatio="none"
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setTooltip(null)}
+        aria-label="Лінійний графік відключень на сьогодні"
+      >
+        <defs>
+          <linearGradient id="timeline-outage-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#ffc94a" />
+            <stop offset="100%" stopColor="#ff7a5a" />
+          </linearGradient>
+        </defs>
+
+        {/* 48 Segments */}
+        {statuses.map((isOff, idx) => {
+          const x = idx * segmentWidth;
+          if (isOff) {
+            return (
+              <rect
+                key={idx}
+                x={x}
+                y={0}
+                width={Math.max(1, segmentWidth - 0.5)}
+                height={HEIGHT}
+                fill="url(#timeline-outage-grad)"
+                opacity={0.92}
+                rx={1}
+              />
+            );
+          }
+          return (
+            <rect
+              key={idx}
+              x={x}
+              y={0}
+              width={Math.max(1, segmentWidth - 0.5)}
+              height={HEIGHT}
+              fill="rgba(95, 245, 203, 0.12)"
+              stroke="rgba(95, 245, 203, 0.22)"
+              strokeWidth={0.5}
+              rx={1}
+            />
+          );
+        })}
+
+        {/* Hour vertical ticks */}
+        {hourLabels.map(({ h, x }) => (
+          <line
+            key={h}
+            x1={x}
+            y1={0}
+            x2={x}
+            y2={HEIGHT}
+            stroke="rgba(255, 255, 255, 0.12)"
+            strokeWidth={1}
+          />
+        ))}
+
+        {/* Real-time needle */}
+        <line
+          x1={needleX}
+          y1={0}
+          x2={needleX}
+          y2={HEIGHT}
+          stroke="var(--cyan)"
+          strokeWidth={2.2}
+          strokeDasharray="4 2"
+        />
+
+        {/* Needle badge */}
+        <rect
+          x={Math.max(2, Math.min(needleX - 22, svgWidth - 46))}
+          y={2}
+          width={44}
+          height={16}
+          rx={4}
+          fill="#07090f"
+          stroke="var(--cyan)"
+          strokeWidth={1}
+        />
+        <text
+          x={Math.max(24, Math.min(needleX, svgWidth - 24))}
+          y={13}
+          textAnchor="middle"
+          fontSize={10}
+          fontFamily="var(--font)"
+          fontWeight={700}
+          fill="var(--cyan)"
+        >
+          {`${String(Math.floor(currentMinutes / 60)).padStart(2, '0')}:${String(currentMinutes % 60).padStart(2, '0')}`}
+        </text>
+      </svg>
+
+      {/* Hour labels row */}
+      <div className={styles.timelineLabels}>
+        {hourLabels.map(({ h, x }) => (
+          <span
+            key={h}
+            className={styles.timelineLabel}
+            style={{ left: `${(x / svgWidth) * 100}%` }}
+          >
+            {String(h).padStart(2, '0')}:00
+          </span>
+        ))}
+      </div>
+
+      {/* Tooltip */}
+      {tooltip && (
+        <div
+          className={styles.tooltip}
+          style={{ left: Math.min(Math.max(10, tooltip.x), svgWidth - 190) }}
+        >
+          {tooltip.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Queue selector ────────────────────────────────────────────────────────────
+
+function QueueSelector({ queue, onChange }) {
+  const selectedGroup = queue[0];
+  const selectedSub = queue[1];
+
+  return (
+    <div className={styles.queueSelector}>
+      <div className={styles.queueSelectorHeader}>
+        <span className={styles.queueSelectorHint}>1. Оберіть номер групи:</span>
+      </div>
+      <div className={styles.queueGroups}>
+        {QUEUE_GROUPS.map((g) => (
+          <button
+            key={g}
+            type="button"
+            className={`${styles.groupBtn} ${selectedGroup === g ? styles.groupBtnActive : ''}`}
+            onClick={() => onChange(`${g}${selectedSub}`)}
+            aria-label={`Черга ${g}`}
+          >
+            Черга {g}
+          </button>
+        ))}
+      </div>
+
+      <div className={styles.queueSelectorHeader}>
+        <span className={styles.queueSelectorHint}>2. Оберіть підчергу:</span>
+      </div>
+      <div className={styles.subQueues}>
+        {['1', '2'].map((s) => (
+          <button
+            key={s}
+            type="button"
+            className={`${styles.subBtn} ${selectedSub === s ? styles.subBtnActive : ''}`}
+            onClick={() => onChange(`${selectedGroup}${s}`)}
+            aria-label={`Підчерга .${s}`}
+          >
+            Підчерга .{s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Notifications Card (Web Push + Telegram Bot + News Channel) ───────────────
+
+function NotificationsCard({ queueLabel, queue }) {
+  const [isSupported, setIsSupported] = useState(true);
+  const [isSubscribed, setIsSubscribed] = useState(false);
+  const [isPushLoading, setIsPushLoading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState(null);
+
+  // Check Web Push support and current subscription state on mount
   useEffect(() => {
-    localStorage.setItem("queueToggle", useOutageView.toString());
-  }, [useOutageView]);
+    if (typeof window === 'undefined') return;
 
-  const ensurePublicKey = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiBase}/vapid_public_key`);
-      const data = await response.json();
-      if (data?.key) setPublicKey(data.key);
-      return data?.key ?? null;
-    } catch (_) {
-      return null;
+    const supported =
+      'Notification' in window &&
+      'serviceWorker' in navigator &&
+      'PushManager' in window;
+
+    setIsSupported(supported);
+
+    if (supported) {
+      navigator.serviceWorker.ready
+        .then((reg) => reg.pushManager.getSubscription())
+        .then((sub) => {
+          setIsSubscribed(Boolean(sub));
+        })
+        .catch(() => {
+          setIsSubscribed(false);
+        });
     }
   }, []);
 
-  const fetchStatuses = useCallback(async (selectedQueue) => {
+  const handleSubscribe = async () => {
+    if (!isSupported) {
+      alert('Ваш браузер не підтримує Web Push. Скористайтеся нашим Telegram-ботом!');
+      return;
+    }
+
+    setIsPushLoading(true);
+    setStatusMsg(null);
+
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setStatusMsg({ type: 'error', text: 'Дозвіл на сповіщення не надано у браузері.' });
+        setIsPushLoading(false);
+        return;
+      }
+
+      const vapidKey = await fetchVapidPublicKey();
+      if (!vapidKey) {
+        setStatusMsg({ type: 'error', text: 'Не вдалося отримати VAPID ключ сервера.' });
+        setIsPushLoading(false);
+        return;
+      }
+
+      let reg = await navigator.serviceWorker.getRegistration();
+      if (!reg) {
+        reg = await navigator.serviceWorker.register('/sw.js');
+      }
+      await navigator.serviceWorker.ready;
+
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(vapidKey),
+        });
+      }
+
+      const res = await subscribeWebPush(queue, sub);
+      setIsSubscribed(true);
+      setStatusMsg({
+        type: 'success',
+        text: res?.msg || `Ви успішно підписалися на сповіщення для черги ${queueLabel}!`,
+      });
+    } catch (err) {
+      setStatusMsg({
+        type: 'error',
+        text: 'Помилка підписки. Спробуйте пізніше або використовуйте Telegram-бота.',
+      });
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
+
+  const handleUnsubscribe = async () => {
+    setIsPushLoading(true);
+    setStatusMsg(null);
+
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+
+      if (sub) {
+        try {
+          await unsubscribeWebPush(sub);
+        } catch (_) {
+          /* ignore server error */
+        }
+        await sub.unsubscribe();
+      }
+
+      setIsSubscribed(false);
+      setStatusMsg({ type: 'info', text: 'Підписку на Web Push сповіщення скасовано.' });
+    } catch (_) {
+      setStatusMsg({ type: 'error', text: 'Не вдалося скасувати підписку.' });
+    } finally {
+      setIsPushLoading(false);
+    }
+  };
+
+  return (
+    <section className={styles.card}>
+      <div className={styles.cardTop}>
+        <div>
+          <div className={styles.notifyCardTitleRow}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={styles.notifyTitleIcon}>
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+              <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+            </svg>
+            <h2 className={styles.cardTitle}>Сповіщення та Telegram</h2>
+          </div>
+          <p className={styles.cardDesc}>
+            Отримуйте попередження за 1 годину до відключення для черги {queueLabel} та оперативні новини
+          </p>
+        </div>
+      </div>
+
+      <div className={styles.notifyGrid}>
+        {/* Web Push Card */}
+        <div className={styles.notifyChannelCard}>
+          <div className={styles.notifyChannelHeader}>
+            <div className={styles.notifyChannelIconWrap}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="2" y1="12" x2="22" y2="12" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+              </svg>
+            </div>
+            <div className={styles.notifyMeta}>
+              <div className={styles.notifyChannelTitle}>Браузерні сповіщення (Web Push)</div>
+              <div className={styles.notifyChannelSub}>
+                Працюють на смартфонах Android, iPhone (PWA) та на комп&rsquo;ютері
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.notifyChannelBody}>
+            {isSubscribed ? (
+              <div className={styles.subscribedStatusRow}>
+                <span className={styles.subscribedBadge}>Активна підписка (Черга {queueLabel})</span>
+                <button
+                  type="button"
+                  className={styles.unsubscribeBtn}
+                  onClick={handleUnsubscribe}
+                  disabled={isPushLoading}
+                >
+                  {isPushLoading ? 'Скасування…' : 'Скасувати підписку'}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className={styles.subscribeBtn}
+                onClick={handleSubscribe}
+                disabled={isPushLoading}
+              >
+                {isPushLoading ? 'Підключення…' : `Увімкнути для черги ${queueLabel}`}
+              </button>
+            )}
+
+            {statusMsg && (
+              <div
+                className={`${styles.notifyStatusAlert} ${
+                  statusMsg.type === 'error'
+                    ? styles.notifyStatusError
+                    : styles.notifyStatusSuccess
+                }`}
+              >
+                {statusMsg.text}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Telegram Bot Card */}
+        <div className={styles.notifyChannelCard}>
+          <div className={styles.notifyChannelHeader}>
+            <div className={styles.notifyChannelIconTelegram}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.52 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z" />
+              </svg>
+            </div>
+            <div className={styles.notifyMeta}>
+              <div className={styles.notifyChannelTitle}>Telegram-бот сповіщень</div>
+              <div className={styles.notifyChannelSub}>
+                Персональний графік та надійні сповіщення без збоїв
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.notifyChannelBody}>
+            <a
+              href="https://t.me/likhtarychok_bot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.telegramBtn}
+            >
+              <span>Відкрити @likhtarychok_bot</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        {/* Telegram News Channel Card */}
+        <div className={styles.notifyChannelCard}>
+          <div className={styles.notifyChannelHeader}>
+            <div className={styles.notifyChannelIconNews}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.52 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z" />
+              </svg>
+            </div>
+            <div className={styles.notifyMeta}>
+              <div className={styles.notifyChannelTitle}>Новинний Telegram-канал</div>
+              <div className={styles.notifyChannelSub}>
+                Оперативні новини щодо відключень, аварій та оновлень графіків у Житомирі
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.notifyChannelBody}>
+            <a
+              href="https://t.me/likhtarychok_org"
+              target="_blank"
+              rel="noopener noreferrer"
+              className={styles.telegramChannelBtn}
+            >
+              <span>Підписатися на @likhtarychok_org</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Main Page Component ───────────────────────────────────────────────────────
+
+export default function Graph() {
+  const [isQueuePreselected] = useState(() => hasSavedQueueInStorage());
+  const [queue, setQueue] = useState(() => loadQueueFromStorage());
+  const [viewMode, setViewMode] = useState(() => loadViewModeFromStorage());
+  const [selectionTab, setSelectionTab] = useState('address'); // 'address' | 'queue'
+  const [statuses, setStatuses] = useState(defaultStatuses);
+  const [source, setSource] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [currentMinutes, setCurrentMinutes] = useState(() => getCurrentMinutes());
+
+  // Update current time minutes every 20 seconds
+  useEffect(() => {
+    const id = setInterval(() => setCurrentMinutes(getCurrentMinutes()), 20_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleSelectQueue = useCallback((newQueue) => {
+    setQueue(newQueue);
+    try {
+      localStorage.setItem('queueSelector', newQueue);
+    } catch (_) {
+      /* ignore */
+    }
+  }, []);
+
+  const handleSelectViewMode = useCallback((mode) => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem('graphViewMode', mode);
+    } catch (_) {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('graphViewMode', viewMode);
+    } catch (_) {
+      /* ignore */
+    }
+  }, [viewMode]);
+
+  const fetchStatuses = useCallback(async (q) => {
     setIsLoading(true);
     try {
-      const { data, source: usedSource } = await loadQueueStatus(selectedQueue);
-      const normalized = normalizeStatuses(data);
-      setStatuses(data.length > 0 ? normalized : defaultStatuses);
-      setHasData(data.length > 0);
-      setOutageRanges(data.length > 0 ? collectOutageRanges(normalized) : []);
-      setSource(usedSource);
+      const { data, source: src } = await loadQueueStatus(q);
+      setStatuses(data.length > 0 ? normalizeStatuses(data) : defaultStatuses);
+      setSource(src);
     } catch (_) {
       setStatuses(defaultStatuses);
-      setHasData(false);
-      setOutageRanges([]);
-      setSource("none");
+      setSource('none');
     } finally {
       setIsLoading(false);
     }
@@ -340,278 +661,285 @@ function Graph() {
     fetchStatuses(queue);
   }, [queue, fetchStatuses]);
 
+  // Auto-refresh every 5 min
   useEffect(() => {
-    const intervalId = setInterval(() => fetchStatuses(queue), 5 * 60 * 1000);
-    return () => clearInterval(intervalId);
+    const id = setInterval(() => fetchStatuses(queue), 5 * 60_000);
+    return () => clearInterval(id);
   }, [queue, fetchStatuses]);
 
-  useEffect(() => {
-    ensurePublicKey();
-  }, [ensurePublicKey]);
+  const outageRanges = useMemo(() => collectOutageRanges(statuses), [statuses]);
+  const currentSlot = getCurrentSlotIndex();
+  const queueLabel = `${queue[0]}.${queue[1]}`;
+  const srcInfo = source ? SOURCE_LABELS[source] : null;
 
-  const statusRows = useMemo(
-    () =>
-      Array.from({ length: 24 }, (_, idx) => {
-        const left = statuses[idx * 2] ?? false;
-        const right = statuses[idx * 2 + 1] ?? false;
-        return [left, right];
-      }),
-    [statuses]
-  );
+  const hasData = statuses.some(Boolean);
 
-  async function subscribeViaSite() {
-    if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
-      alert("На жаль, ваш браузер не підтримує вебсповіщення. Ви можете підписатися на сповіщення в Telegram.");
-      return;
-    }
+  // Stats calculation
+  const totalOffSlots = statuses.filter(Boolean).length;
+  const totalOffHours = (totalOffSlots * 0.5).toFixed(totalOffSlots % 2 === 0 ? 0 : 1);
+  const totalOnHours = (24 - Number(totalOffHours)).toFixed(totalOffSlots % 2 === 0 ? 0 : 1);
+  const isCurrentOff = Boolean(statuses[currentSlot]);
 
-    const key = publicKey ?? (await ensurePublicKey());
-    if (!key) {
-      alert("Не вдалося отримати ключ для підписки.");
-      return;
-    }
+  // ── Section: Queue selection ────────────────────────────────────────────────
+  const queueSelectionSection = (
+    <section className={styles.card}>
+      <div className={styles.cardTop}>
+        <div>
+          <h2 className={styles.cardTitle}>Вибір черги</h2>
+          <p className={styles.cardDesc}>
+            Знайдіть свою чергу за адресою або оберіть номер вручну
+          </p>
+        </div>
 
-    try {
-      const reg = await navigator.serviceWorker.register("/sw.js");
-      await navigator.serviceWorker.ready;
-
-      const subscription = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(key),
-      });
-
-      const payload = {
-        queue,
-        subscription,
-      };
-
-      const answer = await fetch(`${apiBase}/subscribe`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      let result = null;
-      try {
-        result = await answer.json();
-      } catch (_) {
-        /* ignore */
-      }
-
-      const msg = result?.msg || (answer.ok ? "ok" : "Помилка підписки");
-      alert(`${msg} ${queueLabel}`);
-    } catch (_) {
-      alert("На жаль, ваш браузер не підтримує вебсповіщення. Ви можете підписатися на сповіщення в Telegram.");
-    } finally {
-      setIsModalOpen(false);
-    }
-  }
-
-  async function unsubscribe() {
-    try {
-      const reg = await navigator.serviceWorker.register(`/sw.js`);
-      const sw = await navigator.serviceWorker.ready;
-      const currentSub = await sw.pushManager.getSubscription();
-
-      if (!currentSub) {
-        alert("Підписка не знайдена на цьому пристрої.");
-        return;
-      }
-
-      const payload = {
-        subscription: currentSub.toJSON ? currentSub.toJSON() : currentSub,
-      };
-
-      try {
-        const answer = await fetch(`${apiBase}/unsubscribe`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const result = await answer.json();
-        alert(result?.msg || (result?.ok ? "Підписку скасовано" : "Помилка"));
-      } catch (_) {
-        alert("Не вдалося скасувати підписку.");
-      }
-
-      try {
-        await currentSub.unsubscribe();
-      } catch (_) {
-        /* ignore */
-      }
-    } catch (_) {
-      alert("Не вдалося скасувати підписку.");
-    }
-  }
-
-  const outageContent = useMemo(() => {
-    if (!hasData) {
-      return <p className={styles.outageEmpty}>Немає даних щодо графіка</p>;
-    }
-
-    if (outageRanges.length === 0) {
-      return <p className={styles.outageEmpty}>Сьогодні відключень не планується</p>;
-    }
-
-    return outageRanges.map(({ start, end }) => (
-      <div key={`${start}-${end}`} className={styles.outageChip}>
-        {start}–{end}
+        {/* Segmented Switcher */}
+        <div className={styles.subTabSwitcher}>
+          <button
+            type="button"
+            className={`${styles.subTabBtn} ${
+              selectionTab === 'address' ? styles.subTabBtnActive : ''
+            }`}
+            onClick={() => setSelectionTab('address')}
+          >
+            Пошук за адресою
+          </button>
+          <button
+            type="button"
+            className={`${styles.subTabBtn} ${
+              selectionTab === 'queue' ? styles.subTabBtnActive : ''
+            }`}
+            onClick={() => setSelectionTab('queue')}
+          >
+            Ручний вибір
+          </button>
+        </div>
       </div>
-    ));
-  }, [hasData, outageRanges]);
+
+      {selectionTab === 'address' ? (
+        <AddressSearch onSelectQueue={handleSelectQueue} currentQueue={queue} />
+      ) : (
+        <QueueSelector queue={queue} onChange={handleSelectQueue} />
+      )}
+    </section>
+  );
 
   return (
     <div className={styles.page}>
-      <section className={styles.hero}>
-        <div className={styles.heroText}>
-          <p className={styles.eyebrow}>Графік для вашої черги</p>
-          <h1>Контролюйте чергу {queueLabel} та отримуйте нагадування за годину</h1>
-          <p className={styles.lead}>
-            Перемикайтесь між виглядом «Графік» та «Години», оновлюйте дані вручну та підключайте push-сповіщення.
-            Якщо потрібні деталі — зазирніть у <Link to="/faq">FAQ</Link>.
-          </p>
-          <div className={styles.meta}>
-            <span>Оновлення кожні 5 хв</span>
-            <span>Push + Telegram</span>
-            <span>Житомирська область</span>
-            {source ? <span>{sourceLabels[source]}</span> : null}
-          </div>
-        </div>
-
-        <div className={styles.heroCard}>
-          <div className={styles.cardHeader}>
-            <div>
-              <p className={styles.label}>Ваша черга</p>
-              <p className={styles.copy}>Зберігаємо вибір у браузері та не запитуємо персональні дані.</p>
-            </div>
-            <span className={styles.queuePill}>{queueLabel}</span>
-          </div>
-
-          <div className={styles.selectRow}>
-            <select
-              id="queueSelector"
-              className={styles.queueSelector}
-              value={queue}
-              onChange={(e) => setQueue(e.target.value)}
-            >
-              {queueOptions.map((value) => (
-                <option key={value} value={value}>
-                  {value[0]}.{value[1]}
-                </option>
-              ))}
-            </select>
-            <button type="button" className={styles.refreshQueue} onClick={() => fetchStatuses(queue)} disabled={isLoading}>
-              {isLoading ? "Оновлюємо..." : "Оновити"}
-            </button>
-          </div>
-
-          <div className={styles.toggleRow}>
-            <div>
-              <p className={styles.label}>Перемкнути вигляд</p>
-              <p className={styles.copy}>Графік або готові інтервали без світла.</p>
-            </div>
-            <label className={styles.switch}>
-              <input
-                type="checkbox"
-                id="queueToggle"
-                checked={useOutageView}
-                onChange={(e) => setUseOutageView(e.target.checked)}
-              />
-              <span className={styles.switchLabel}>{useOutageView ? "Години" : "Графік"}</span>
-            </label>
-          </div>
-        </div>
-      </section>
-
-      <section className={styles.actionsRow}>
-        <div className={styles.actionCard}>
-          <div>
-            <p className={styles.label}>Сповіщення за годину</p>
-            <p className={styles.copy}>
-              Надішлемо нагадування перед плановим відключенням. Якщо web-push недоступний, використовуйте{" "}
-              <a href="https://t.me/likhtarychok_help_bot" target="_blank" rel="noreferrer">Telegram-бот підтримки</a>.
-            </p>
-          </div>
-          <div className={styles.actionButtons}>
-            <button type="button" onClick={() => setIsModalOpen(true)}>
-              Увімкнути сповіщення
-            </button>
-            <button type="button" className={styles.ghostButton} onClick={unsubscribe}>
-              Скасувати підписку
-            </button>
-          </div>
-        </div>
-
-        <div className={styles.noteCard}>
-          <p className={styles.label}>Нагадуємо</p>
-          <p className={styles.copy}>
-            Офіційний графік може змінюватися протягом дня. Якщо бачите розбіжності — перевірте повторно або зайдіть у Telegram-бот.
-          </p>
-        </div>
-      </section>
-
-
-      <section className={styles.grid}>
-        <div className={`${styles.card} ${useOutageView ? styles.collapsed : ""} ${isLoading ? styles.faded : ""}`}>
-          <div className={styles.cardHeader}>
-            <div>
-              <p className={styles.label}>Графік для черги {queueLabel}</p>
-              <p className={styles.copy}>Оновлюємо кожні 5 хвилин. Натисніть «Оновити», якщо потрібна актуальність просто зараз.</p>
-            </div>
-            <div className={styles.legend}>
-              <span className={styles.legendDot} />
-              <span>Планове відключення</span>
-            </div>
-          </div>
-
-          <div className={styles.schedule}>
-            {statusRows.map(([left, right], idx) => (
-              <div key={`status-${idx}`} className={styles.row}>
-                <div className={styles.time}>{timeSlots[idx]}</div>
-                <div className={`${styles.slot} ${left ? styles.off : ""}`}>{left ? lampOffSvg : null}</div>
-                <div className={`${styles.slot} ${right ? styles.off : ""}`}>{right ? lampOffSvg : null}</div>
+      {/* ── Sub-header with region and current queue indicator ── */}
+      <header className={styles.heroHeader}>
+        <div className={styles.heroInner}>
+          <div className={styles.brandRow}>
+            <span className={styles.logoCity}>Житомирська область</span>
+            <div className={styles.headerRightActions}>
+              <div className={styles.activeQueuePill} title="Обрана черга">
+                <span className={styles.activeQueueText}>Черга {queueLabel}</span>
               </div>
-            ))}
-          </div>
-        </div>
-
-        <div className={`${styles.outageCard} ${useOutageView ? "" : styles.collapsed} ${isLoading ? styles.faded : ""}`}>
-          <div className={styles.cardHeader}>
-            <div>
-              <p className={styles.label}>Години без світла</p>
-              <p className={styles.copy}>Список інтервалів для черги {queueLabel}</p>
             </div>
-            <span className={styles.chip}>{useOutageView ? "Вигляд: Години" : "Вигляд: Графік"}</span>
           </div>
-          <div className={styles.outageList}>{outageContent}</div>
-          <Link className={styles.faqLink} to="/faq">
-            Перейти до FAQ
-          </Link>
         </div>
-      </section>
+      </header>
 
-      {isModalOpen && (
-        <>
-          <div className={styles.modal}>
-            <p className={styles.label}>Куди надсилати сповіщення?</p>
-            <p className={styles.copy}>Обирайте варіант, який підходить пристрою. Push працює не у всіх браузерах.</p>
-            <button type="button" className={styles.closeModal} onClick={() => setIsModalOpen(false)}>
-              ✕
-            </button>
-            <div className={styles.modalButtons}>
-              <a className={styles.selectorBtn} href="https://t.me/likhtarychok_help_bot" target="_blank" rel="noreferrer">
-                Telegram-бот підтримки
-              </a>
-              <button type="button" className={styles.selectorBtn} onClick={subscribeViaSite}>
-                Через сайт (web-push)
+      <main className={styles.main}>
+        {/* If user hasn't selected a queue before, show selector first */}
+        {!isQueuePreselected && queueSelectionSection}
+
+        {/* ── BLOCK 1: Primary Visualization (Clock Dial / Timeline / Intervals) ── */}
+        <section className={`${styles.card} ${styles.heroVisualCard} ${isLoading ? styles.cardFaded : ''}`}>
+          <div className={styles.cardTop}>
+            <div className={styles.heroCardHeader}>
+              <h2 className={styles.cardTitle}>Графік відключень · Черга {queueLabel}</h2>
+              <p className={styles.cardDesc}>
+                {hasData
+                  ? `Без світла: ${totalOffHours} год · Зі світлом: ${totalOnHours} год`
+                  : 'Завантаження або відсутність графіка на добу'}
+              </p>
+            </div>
+
+            <div className={styles.cardActions}>
+              {/* View Switcher: Clock Dial / Timeline / Intervals */}
+              <div className={styles.viewModeToggle} role="group" aria-label="Вид графіка">
+                <button
+                  type="button"
+                  className={`${styles.viewToggleBtn} ${viewMode === 'dial' ? styles.viewToggleBtnActive : ''}`}
+                  onClick={() => handleSelectViewMode('dial')}
+                  title="Циферблат годинника"
+                >
+                  Циферблат
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.viewToggleBtn} ${viewMode === 'timeline' ? styles.viewToggleBtnActive : ''}`}
+                  onClick={() => handleSelectViewMode('timeline')}
+                  title="Лінійна шкала"
+                >
+                  Шкала
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.viewToggleBtn} ${viewMode === 'intervals' ? styles.viewToggleBtnActive : ''}`}
+                  onClick={() => handleSelectViewMode('intervals')}
+                  title="Список інтервалів відключень"
+                >
+                  Час без світла
+                </button>
+              </div>
+
+              {srcInfo && (
+                <span className={`${styles.sourceBadge} ${styles[`source_${srcInfo.cls}`]}`}>
+                  {srcInfo.text}
+                </span>
+              )}
+
+              <button
+                type="button"
+                className={`${styles.refreshBtn} ${isLoading ? styles.refreshBtnSpinning : ''}`}
+                onClick={() => fetchStatuses(queue)}
+                disabled={isLoading}
+                aria-label="Оновити графік"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 2v6h-6" />
+                  <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                  <path d="M3 22v-6h6" />
+                  <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                </svg>
+                <span className={styles.refreshBtnText}>{isLoading ? '…' : 'Оновити'}</span>
               </button>
             </div>
           </div>
-          <div className={styles.modalOverlay} onClick={() => setIsModalOpen(false)} />
-        </>
-      )}
+
+          {/* Clock Dial View */}
+          {viewMode === 'dial' && (
+            <div className={styles.clockDialSection}>
+              <ClockDial
+                statuses={statuses}
+                currentMinutes={currentMinutes}
+                queueLabel={queueLabel}
+              />
+            </div>
+          )}
+
+          {/* Linear Timeline View */}
+          {viewMode === 'timeline' && (
+            <div className={styles.linearTimelineSection}>
+              <Timeline statuses={statuses} currentMinutes={currentMinutes} />
+            </div>
+          )}
+
+          {/* Intervals View ("Час без світла") */}
+          {viewMode === 'intervals' && (
+            <div className={styles.intervalsVisualSection}>
+              {/* Status Header Strip */}
+              <div className={styles.intervalsStatusStrip}>
+                <div className={styles.intervalsStatusLeft}>
+                  <span
+                    className={`${styles.intervalsStatusDot} ${
+                      isCurrentOff ? styles.intervalsStatusDotOff : styles.intervalsStatusDotOn
+                    }`}
+                  />
+                  <span className={styles.intervalsStatusLabel}>
+                    {isCurrentOff ? 'Зараз відключення' : 'Зараз світло є'}
+                  </span>
+                </div>
+                <div className={styles.intervalsStatusRight}>
+                  Всього без світла: <strong>{totalOffHours} год</strong>
+                </div>
+              </div>
+
+              {/* Intervals List */}
+              <div className={styles.intervalsCardList}>
+                {!hasData && (
+                  <p className={styles.emptyState}>Немає даних щодо графіка на сьогодні</p>
+                )}
+
+                {hasData && outageRanges.length === 0 && (
+                  <div className={styles.emptyStateGood}>
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+                      <polyline points="22 4 12 14.01 9 11.01" />
+                    </svg>
+                    <p>Сьогодні відключень для черги {queueLabel} не заплановано</p>
+                  </div>
+                )}
+
+                {hasData &&
+                  outageRanges.map(({ start, end, startIdx, endIdx }) => {
+                    const isActive = currentSlot >= startIdx && currentSlot < endIdx;
+                    const isPast = currentSlot >= endIdx;
+                    const durationHours = (endIdx - startIdx) * 0.5;
+                    const durFormatted = `${durationHours % 1 === 0 ? durationHours : durationHours} год`;
+
+                    return (
+                      <div
+                        key={`${start}-${end}`}
+                        className={`${styles.intervalRowCard} ${
+                          isActive
+                            ? styles.intervalRowActive
+                            : isPast
+                            ? styles.intervalRowPast
+                            : styles.intervalRowUpcoming
+                        }`}
+                      >
+                        <div className={styles.intervalRowLeft}>
+                          <span className={styles.intervalRowTime}>
+                            {start} – {end}
+                          </span>
+                          <span className={styles.intervalRowDuration}>
+                            {durFormatted}
+                          </span>
+                        </div>
+
+                        <div className={styles.intervalRowRight}>
+                          {isActive && (
+                            <span className={styles.intervalBadgeActive}>
+                              Зараз відключення
+                            </span>
+                          )}
+                          {!isActive && !isPast && (
+                            <span className={styles.intervalBadgeUpcoming}>
+                              Заплановано
+                            </span>
+                          )}
+                          {isPast && (
+                            <span className={styles.intervalBadgePast}>
+                              Минуло
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* Chart Legend (only for dial & timeline views) */}
+          {viewMode !== 'intervals' && (
+            <div className={styles.legend}>
+              <span className={styles.legendItem}>
+                <span className={styles.legendDotOff} /> Відключення
+              </span>
+              <span className={styles.legendItem}>
+                <span className={styles.legendDotOn} /> Є світло
+              </span>
+              <span className={styles.legendItem}>
+                <span className={styles.legendNeedle} /> Зараз
+              </span>
+            </div>
+          )}
+        </section>
+
+        {/* If user already had a saved queue, render selector here */}
+        {isQueuePreselected && queueSelectionSection}
+
+        {/* ── BLOCK 3: Push Notifications & Telegram Channels ── */}
+        <NotificationsCard queueLabel={queueLabel} queue={queue} />
+
+        {/* ── Footer Note ── */}
+        <footer className={styles.footer}>
+          <p>Дані оновлюються автоматично кожні 5 хвилин · Житомиробленерго (ЖОЕ)</p>
+          <p>Офіційний графік може оперативно змінюватися за розпорядженням НЕК &laquo;Укренерго&raquo;</p>
+        </footer>
+      </main>
     </div>
   );
 }
-
-export default Graph;

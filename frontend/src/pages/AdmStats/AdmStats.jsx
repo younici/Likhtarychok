@@ -331,9 +331,7 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* ========================================================
-          SECTION 1: QUEUE VISUAL CHART (DIAGRAM)
-          ======================================================== */}
+      {/* SECTION 1: QUEUE VISUAL CHART */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
@@ -349,7 +347,6 @@ export default function AdmStats() {
           </span>
         </div>
 
-        {/* Bar Chart Visualizer */}
         <div className={styles.chartWrapper}>
           <div className={styles.chartBarsContainer}>
             {Object.entries(queueDist).map(([lbl, qData]) => {
@@ -400,9 +397,7 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* ========================================================
-          SECTION 2: SUBSCRIBERS RANKING
-          ======================================================== */}
+      {/* SECTION 2: SUBSCRIBERS RANKING */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
@@ -434,7 +429,7 @@ export default function AdmStats() {
                 </tr>
               ) : (
                 subscribersRanking.map((item, idx) => {
-                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
+                  const medal = idx === 0 ? "#1" : idx === 1 ? "#2" : idx === 2 ? "#3" : `#${idx + 1}`;
                   return (
                     <tr key={item.label}>
                       <td>
@@ -463,9 +458,7 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* ========================================================
-          SECTION 3: PUSHES RANKING (BY QUEUE)
-          ======================================================== */}
+      {/* SECTION 3: PUSHES RANKING */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
@@ -499,7 +492,7 @@ export default function AdmStats() {
                 </tr>
               ) : (
                 pushesRanking.map((item, idx) => {
-                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
+                  const medal = idx === 0 ? "#1" : idx === 1 ? "#2" : idx === 2 ? "#3" : `#${idx + 1}`;
                   return (
                     <tr key={item.label}>
                       <td>
@@ -536,9 +529,7 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* ========================================================
-          SECTION 4: GRAPH REQUESTS & POPULARITY
-          ======================================================== */}
+      {/* SECTION 4: GRAPH REQUESTS & POPULARITY */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
@@ -570,7 +561,7 @@ export default function AdmStats() {
                 </tr>
               ) : (
                 graphRanking.map((item, idx) => {
-                  const medal = idx === 0 ? "🥇" : idx === 1 ? "🥈" : idx === 2 ? "🥉" : `#${idx + 1}`;
+                  const medal = idx === 0 ? "#1" : idx === 1 ? "#2" : idx === 2 ? "#3" : `#${idx + 1}`;
                   return (
                     <tr key={item.label}>
                       <td>
@@ -604,9 +595,7 @@ export default function AdmStats() {
         </div>
       </div>
 
-      {/* ========================================================
-          SECTION 5: DATABASE TABLES STATS
-          ======================================================== */}
+      {/* SECTION 5: DATABASE TABLES STATS */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>
@@ -618,7 +607,7 @@ export default function AdmStats() {
             Статистика бази даних (PostgreSQL)
           </div>
           <span className={styles.metaText}>
-            Статус: {dbData.status === "online" ? "✅ Підключено" : "⚠️ Офлайн / вимкнено"}
+            Статус: {dbData.status === "online" ? "Підключено" : "Офлайн / вимкнено"}
           </span>
         </div>
 
@@ -660,9 +649,7 @@ export default function AdmStats() {
         )}
       </div>
 
-      {/* ========================================================
-          SECTION 6: PUSH HISTORY 24H
-          ======================================================== */}
+      {/* SECTION 6: PUSH HISTORY 24H */}
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <div className={styles.sectionTitle}>

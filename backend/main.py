@@ -25,6 +25,7 @@ import untils.redis_db as redis_un
 from untils import notifier
 from untils import subcription
 from untils import cache
+from untils import addresses
 import db.orm.utils as db
 
 import asyncio
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler()
     if ONLINE:
         scheduler.add_job(notifier.check_and_notify, "cron", minute="*/30")
+        scheduler.add_job(addresses.sync_addresses_from_ztoe, "interval", hours=12)
     else:
         log.info("app started in offline mode")
 
@@ -91,6 +93,7 @@ async def lifespan(app: FastAPI):
     ]
 
     app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
+    app.state.bg_tasks.append(asyncio.create_task(addresses.ensure_addresses_loaded()))
 
     yield
 
@@ -286,3 +289,25 @@ async def grpc_get_status(req: Request):
             "Access-Control-Expose-Headers": "grpc-status, grpc-message",
         },
     )
+
+
+@app.get(f"{BASE_PATH}/addresses/search")
+@app.get("/addresses/search")
+async def search_addresses(q: str = "", limit: int = 12):
+    limit = max(1, min(30, limit))
+    meta = addresses.get_meta()
+    results = addresses.search_addresses(q, limit=limit)
+    return {
+        "ok": True,
+        "query": q,
+        "results": results,
+        "total_indexed": meta["total_indexed"],
+        "updated_at": meta["updated_at"],
+        "source": meta["source"],
+    }
+
+
+@app.get(f"{BASE_PATH}/addresses/meta")
+@app.get("/addresses/meta")
+async def get_addresses_meta():
+    return {"ok": True, **addresses.get_meta()}

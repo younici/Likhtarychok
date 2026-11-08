@@ -1,0 +1,43 @@
+:root {
+  --bg: #07090f;
+  --bg-card: rgba(255, 255, 255, 0.03);
+  --bg-card-hover: rgba(255, 255, 255, 0.055);
+  --border: rgba(255, 255, 255, 0.07);
+  --text: #e8f0ff;
+  --muted: #8899bb;
+  --accent: #ffc94a;
+  --accent-glow: rgba(255, 201, 74, 0.25);
+  --cyan: #5ff5cb;
+  --cyan-glow: rgba(95, 245, 203, 0.2);
+  --success: #5ff5cb;
+  --danger: #ff7a5a;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --transition: 0.2s ease;
+
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+
+  /* Aliases & Page Compatibility Tokens */
+  --bg-body: #07090f;
+  --bg-surface: #0d1322;
+  --bg-panel: rgba(255, 255, 255, 0.035);
+  --text-primary: #e8f0ff;
+  --text-muted: #8899bb;
+  --text-contrast: #07090f;
+  --accent-strong: #ff9d42;
+  --accent-secondary: #5ff5cb;
+  --warning: #f7b267;
+  --stroke: 1px solid rgba(255, 255, 255, 0.08);
+  --shadow-soft: 0 20px 50px rgba(0, 0, 0, 0.5);
+  --shadow-lift: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --card-radius: 16px;
+  --grid-gap: 1.25rem;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
