@@ -299,9 +299,8 @@ async def search_addresses(
     limit = max(1, min(40, limit))
     meta = addresses.get_meta()
     if meta["total_indexed"] == 0 and ONLINE:
-        await addresses.ensure_addresses_loaded()
-        meta = addresses.get_meta()
-    results = addresses.search_addresses(q, limit=limit, rem=rem, city=city)
+        addresses.trigger_background_load()
+    results = await addresses.search_addresses_async(q, limit=limit, rem=rem, city=city)
     return {
         "ok": True,
         "query": q,
@@ -318,7 +317,7 @@ async def search_addresses(
 @app.get("/addresses/locations")
 async def get_addresses_locations():
     if addresses.get_meta()["total_indexed"] == 0 and ONLINE:
-        await addresses.ensure_addresses_loaded()
+        addresses.trigger_background_load()
     return {"ok": True, **addresses.get_locations()}
 
 

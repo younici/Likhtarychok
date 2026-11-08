@@ -1,11 +1,14 @@
 import asyncio
+import bisect
 import difflib
 import json
 import logging
 import re
+import time
 from collections import Counter
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from functools import lru_cache
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -18,6 +21,7 @@ log = logging.getLogger(__name__)
 
 REDIS_ADDRESSES_KEY = "ztoe_addresses_cache"
 CACHE_MAX_AGE_SECONDS = 12 * 3600  # 12 hours
+BACKGROUND_RETRY_SECONDS = 300  # min pause between background load attempts
 
 # ---------------------------------------------------------------------------
 # Russian <-> Ukrainian Street & Settlement Synonyms Dictionary
@@ -128,13 +132,31 @@ RUSSIAN_REPLACEMENTS: List[Tuple[str, str]] = [
     ("пушкина", "пушкіна"),
 ]
 
-ENDINGS_SUB: List[Tuple[str, str]] = [
-    (r"ская\b", "ська"),
-    (r"ский\b", "ський"),
-    (r"цкая\b", "цька"),
-    (r"цкий\b", "цький"),
-    (r"овка\b", "івка"),
-]
+
+# All replacements are compiled into ONE regex (longest phrases first) instead of
+# running ~150 separate re.sub() calls for every string.
+_RU_MAP: Dict[str, str] = {ru: ua for ru, ua in RUSSIAN_REPLACEMENTS}
+_RU_PATTERN = re.compile(
+    r"\b("
+    + "|".join(re.escape(k) for k in sorted(_RU_MAP, key=len, reverse=True))
+    + r")\b"
+)
+
+_ENDINGS_MAP: Dict[str, str] = {
+    "ская": "ська",
+    "ский": "ський",
+    "цкая": "цька",
+    "цкий": "цький",
+    "овка": "івка",
+}
+_ENDINGS_PATTERN = re.compile(r"(ская|ский|цкая|цкий|овка)\b")
+
+_APOSTROPHES_PATTERN = re.compile(r"[’`ʼ\"]")
+_PUNCT_PATTERN = re.compile(r"[^\w\s\'-]")
+_RU_LETTERS = str.maketrans({"ы": "и", "э": "е", "ъ": "", "ё": "ьо"})
+_FOLD_TABLE = str.maketrans(
+    {"і": "и", "ї": "и", "є": "е", "ґ": "г", "'": "", "`": "", "-": " "}
+)
 
 ABBREVIATIONS_PATTERN = re.compile(
     r"(?:^|\b)(вул|вулиця|ул|улица|пров|провулок|пер|переулок|пр-т|просп|проспект|майдан|пл|площа|площадь|тупик|проїзд|лінія|м|місто|г|город|с|село|смт|селище|с/рада|буд|будинок|д|дом|кв|рем)(?:\.|\b)",
@@ -171,8 +193,12 @@ LATIN_TO_CYR_HOUSE = str.maketrans(
 
 HOUSE_SORT_RE = re.compile(r"^(\d+)(.*)$")
 HOUSE_BASE_DIGITS_RE = re.compile(r"^(\d+)")
+HOUSE_LETTER_HYPHEN_RE = re.compile(r"^(\d+)-([а-яіїєґ]+)$")
+
+RESIDENTIAL_PREFIXES = ("вул", "пров", "просп", "майдан", "пл")
 
 
+@lru_cache(maxsize=65536)
 def canonical_house(house_str: str) -> str:
     """
     Normalizes a house number string for accurate comparison:
@@ -185,7 +211,7 @@ def canonical_house(house_str: str) -> str:
     h = house_str.strip().lower().translate(LATIN_TO_CYR_HOUSE)
     h = h.replace(" ", "")
     h = h.strip("-.,")
-    h = re.sub(r"^(\d+)-([а-яіїєґ]+)$", r"\1\2", h)
+    h = HOUSE_LETTER_HYPHEN_RE.sub(r"\1\2", h)
     return h
 
 
@@ -199,6 +225,7 @@ def _house_sort_key(h: str) -> Tuple[int, int, str]:
     return (1, 999999, s.lower())
 
 
+@lru_cache(maxsize=65536)
 def normalize_text(text: str) -> str:
     """
     Normalizes street / settlement text:
@@ -212,35 +239,18 @@ def normalize_text(text: str) -> str:
     if not text:
         return ""
 
-    t = text.lower()
-    t = re.sub(r"[’`ʼ\"]", "'", t)
-
-    for ru, ua in RUSSIAN_REPLACEMENTS:
-        pattern = r"\b" + re.escape(ru) + r"\b"
-        t = re.sub(pattern, ua, t)
-
-    for pat, rep in ENDINGS_SUB:
-        t = re.sub(pat, rep, t)
-
-    trans = str.maketrans({"ы": "и", "э": "е", "ъ": "", "ё": "ьо"})
-    t = t.translate(trans)
-
+    t = _APOSTROPHES_PATTERN.sub("'", text.lower())
+    t = _RU_PATTERN.sub(lambda m: _RU_MAP[m.group(1)], t)
+    t = _ENDINGS_PATTERN.sub(lambda m: _ENDINGS_MAP[m.group(1)], t)
+    t = t.translate(_RU_LETTERS)
     t = ABBREVIATIONS_PATTERN.sub(" ", t)
-    t = re.sub(r"[^\w\s\'-]", " ", t)
+    t = _PUNCT_PATTERN.sub(" ", t)
     return " ".join(t.split())
 
 
 def fold_ukr(text: str) -> str:
     """Folds vowel variations (и/і/ї, е/є, г/ґ) and apostrophes for phonetic matching."""
-    return (
-        text.replace("і", "и")
-        .replace("ї", "и")
-        .replace("є", "е")
-        .replace("ґ", "г")
-        .replace("'", "")
-        .replace("`", "")
-        .replace("-", " ")
-    )
+    return text.translate(_FOLD_TABLE)
 
 
 def parse_search_query(raw_query: str) -> Tuple[List[str], Optional[str]]:
@@ -281,14 +291,14 @@ def parse_search_query(raw_query: str) -> Tuple[List[str], Optional[str]]:
 
         if HOUSE_PATTERN.match(token):
             is_last_token = i == len(parts) - 1
-            # Check if this number is part of the street name (e.g. "1 пров.", "1 Травня", "1-й пров.")
+            # Number that is part of the street name ("1 пров.", "1 Травня", "1-й пров.")
             if not is_last_token and (
                 ORDINAL_PATTERN.match(token)
                 or (STREET_TYPE_PATTERN.match(next_token) and token.isdigit())
             ):
                 text_parts.append(token)
             else:
-                # Check if user wrote house with space before letter: "63 А"
+                # House written with a space before the letter: "63 А"
                 if (
                     token.isdigit()
                     and next_token
@@ -318,21 +328,18 @@ class IndexedRecord:
         "city",
         "street",
         "queue_code",
-        "norm_rem",
         "norm_street",
-        "norm_city",
-        "street_folded",
-        "city_folded",
-        "street_words",
-        "street_folded_words",
-        "city_words",
-        "city_folded_words",
+        "street_words_f",
+        "city_words_f",
+        "street_set",
+        "city_set",
         "houses_sorted",
         "houses_preview",
         "houses_canon_map",
         "houses_base_map",
         "is_zhytomyr_city",
         "is_major_city",
+        "is_residential",
         "total_queues_for_street",
     )
 
@@ -344,21 +351,16 @@ class IndexedRecord:
         self.queue_code: int = int(item.get("queue", 11))
         self.total_queues_for_street: int = total_queues_for_street
 
-        self.norm_rem = normalize_text(self.rem)
         self.norm_street = normalize_text(self.street)
-        self.norm_city = normalize_text(self.city)
+        norm_city = normalize_text(self.city)
 
-        self.street_folded = fold_ukr(self.norm_street)
-        self.city_folded = fold_ukr(self.norm_city)
+        self.street_words_f: Tuple[str, ...] = tuple(fold_ukr(self.norm_street).split())
+        self.city_words_f: Tuple[str, ...] = tuple(fold_ukr(norm_city).split())
+        self.street_set: FrozenSet[str] = frozenset(self.street_words_f)
+        self.city_set: FrozenSet[str] = frozenset(self.city_words_f)
 
-        self.street_words = self.norm_street.split()
-        self.street_folded_words = self.street_folded.split()
-        self.city_words = self.norm_city.split()
-        self.city_folded_words = self.city_folded.split()
-
-        raw_houses: List[str] = item.get("houses", [])
         unique_houses: Dict[str, None] = {}
-        for h in raw_houses:
+        for h in item.get("houses", []):
             hs = h.strip()
             if hs:
                 unique_houses[hs] = None
@@ -368,41 +370,74 @@ class IndexedRecord:
 
         real_houses = [h for h in sorted_houses if h.lower() != "б/н"]
         preview_source = real_houses if real_houses else sorted_houses
-        preview_slice = preview_source[:14]
-        self.houses_preview = ", ".join(preview_slice) + (
+        self.houses_preview = ", ".join(preview_source[:14]) + (
             "…" if len(preview_source) > 14 else ""
         )
 
         canon_map: Dict[str, str] = {}
         base_map: Dict[str, str] = {}
-        for h in sorted_houses:
-            if h.lower() == "б/н":
-                continue
+        for h in real_houses:
             c = canonical_house(h)
             if c and c not in canon_map:
                 canon_map[c] = h
             m_base = HOUSE_BASE_DIGITS_RE.match(c)
             if m_base:
-                b_num = m_base.group(1)
-                if b_num not in base_map:
-                    base_map[b_num] = h
+                base_map.setdefault(m_base.group(1), h)
 
         self.houses_canon_map = canon_map
         self.houses_base_map = base_map
-        self.is_zhytomyr_city = self.norm_city == "житомир"
+        self.is_zhytomyr_city = norm_city == "житомир"
         self.is_major_city = self.city.lower().startswith(("місто ", "м."))
+        self.is_residential = self.street.lower().startswith(RESIDENTIAL_PREFIXES)
 
 
-_INDEXED_RECORDS: List[IndexedRecord] = []
-_LOCATIONS_CACHE: Dict[str, Any] = {
-    "rems": [],
-    "cities_by_rem": {},
-    "total_rems": 0,
-    "total_cities": 0,
-}
-_UPDATED_AT: Optional[str] = None
-_SOURCE: str = "empty"
+class _AddressIndex:
+    """
+    Immutable snapshot of the address index. A new snapshot is built off the event
+    loop and swapped in with a single reference assignment, so readers never see
+    a half-built index.
+    """
+
+    __slots__ = (
+        "version",
+        "records",
+        "street_postings",
+        "city_postings",
+        "street_vocab",
+        "city_vocab",
+        "by_rem",
+        "by_city",
+        "default_ids",
+        "locations",
+        "updated_at",
+        "source",
+    )
+
+    def __init__(self) -> None:
+        self.version: int = 0
+        self.records: List[IndexedRecord] = []
+        self.street_postings: Dict[str, Set[int]] = {}
+        self.city_postings: Dict[str, Set[int]] = {}
+        self.street_vocab: List[str] = []
+        self.city_vocab: List[str] = []
+        self.by_rem: Dict[str, Set[int]] = {}
+        self.by_city: Dict[str, Set[int]] = {}
+        self.default_ids: List[int] = []
+        self.locations: Dict[str, Any] = {
+            "rems": [],
+            "cities_by_rem": {},
+            "total_rems": 0,
+            "total_cities": 0,
+        }
+        self.updated_at: Optional[str] = None
+        self.source: str = "empty"
+
+
+_INDEX: _AddressIndex = _AddressIndex()
+_VERSION_COUNTER = 0
 _SYNC_LOCK: Optional[asyncio.Lock] = None
+_BG_TASK: Optional["asyncio.Task[None]"] = None
+_LAST_BG_ATTEMPT: float = 0.0
 
 
 def _get_sync_lock() -> asyncio.Lock:
@@ -429,90 +464,122 @@ def _rem_sort_key(rem_name: str) -> Tuple[int, str]:
     return (1, rem_name)
 
 
-def _set_indexed_addresses(
+def _build_index(
     items: List[Dict[str, Any]], updated_at: Optional[str], source: str
-) -> None:
-    global _INDEXED_RECORDS, _LOCATIONS_CACHE, _UPDATED_AT, _SOURCE
+) -> _AddressIndex:
+    """CPU-heavy part: builds a full index snapshot. Safe to run in a worker thread."""
+    idx = _AddressIndex()
+    idx.updated_at = updated_at
+    idx.source = source
 
-    street_queue_counts = Counter(
-        (
-            item.get("rem", "").strip(),
-            item.get("city", "").strip(),
-            item.get("street", "").strip(),
-        )
-        for item in items
+    street_key = lambda it: (  # noqa: E731
+        it.get("rem", "").strip(),
+        it.get("city", "").strip(),
+        it.get("street", "").strip(),
     )
+    street_queue_counts = Counter(street_key(it) for it in items)
 
-    _INDEXED_RECORDS = [
-        IndexedRecord(
-            item,
-            total_queues_for_street=street_queue_counts[
-                (
-                    item.get("rem", "").strip(),
-                    item.get("city", "").strip(),
-                    item.get("street", "").strip(),
-                )
-            ],
-        )
-        for item in items
+    records = [
+        IndexedRecord(it, total_queues_for_street=street_queue_counts[street_key(it)])
+        for it in items
     ]
-    _UPDATED_AT = updated_at
-    _SOURCE = source
+    idx.records = records
 
-    cities_by_rem_sets: Dict[str, set] = {}
-    for rec in _INDEXED_RECORDS:
+    cities_by_rem_sets: Dict[str, Set[str]] = {}
+    zhytomyr_ids: List[int] = []
+    other_ids: List[int] = []
+
+    for rid, rec in enumerate(records):
+        for w in rec.street_set:
+            idx.street_postings.setdefault(w, set()).add(rid)
+        for w in rec.city_set:
+            idx.city_postings.setdefault(w, set()).add(rid)
+
+        if rec.rem:
+            idx.by_rem.setdefault(rec.rem.lower(), set()).add(rid)
+        if rec.city:
+            idx.by_city.setdefault(rec.city.lower(), set()).add(rid)
         if rec.rem and rec.city:
             cities_by_rem_sets.setdefault(rec.rem, set()).add(rec.city)
 
-    rems_sorted = sorted(cities_by_rem_sets.keys(), key=_rem_sort_key)
-    cities_by_rem = {
-        rem: sorted(cities_by_rem_sets[rem], key=_city_sort_key)
-        for rem in rems_sorted
-    }
-    total_cities = sum(len(v) for v in cities_by_rem.values())
+        (zhytomyr_ids if rec.is_zhytomyr_city else other_ids).append(rid)
 
-    _LOCATIONS_CACHE = {
+    idx.street_vocab = sorted(idx.street_postings)
+    idx.city_vocab = sorted(idx.city_postings)
+    idx.default_ids = zhytomyr_ids + other_ids
+
+    rems_sorted = sorted(cities_by_rem_sets, key=_rem_sort_key)
+    cities_by_rem = {
+        rem: sorted(cities_by_rem_sets[rem], key=_city_sort_key) for rem in rems_sorted
+    }
+    idx.locations = {
         "rems": rems_sorted,
         "cities_by_rem": cities_by_rem,
         "total_rems": len(rems_sorted),
-        "total_cities": total_cities,
+        "total_cities": sum(len(v) for v in cities_by_rem.values()),
     }
+    return idx
 
+
+def _swap_index(idx: _AddressIndex) -> None:
+    global _INDEX, _VERSION_COUNTER
+    _VERSION_COUNTER += 1
+    idx.version = _VERSION_COUNTER
+    _INDEX = idx
+    _search_cached.cache_clear()
+    _fuzzy_vocab_matches.cache_clear()
     log.info(
         "Addresses index updated: %d items across %d REMs and %d settlements (source: %s, updated_at: %s)",
-        len(_INDEXED_RECORDS),
-        len(rems_sorted),
-        total_cities,
-        source,
-        updated_at,
+        len(idx.records),
+        idx.locations["total_rems"],
+        idx.locations["total_cities"],
+        idx.source,
+        idx.updated_at,
     )
+
+
+def _set_indexed_addresses(
+    items: List[Dict[str, Any]], updated_at: Optional[str], source: str
+) -> None:
+    """Synchronously builds and activates a new index (use via asyncio.to_thread in async code)."""
+    _swap_index(_build_index(items, updated_at, source))
+
+
+async def _set_indexed_addresses_async(
+    items: List[Dict[str, Any]], updated_at: Optional[str], source: str
+) -> None:
+    """Builds the index in a worker thread so the event loop is never blocked."""
+    idx = await asyncio.to_thread(_build_index, items, updated_at, source)
+    _swap_index(idx)
 
 
 def get_meta() -> Dict[str, Any]:
     """Returns metadata about the currently loaded address index."""
+    idx = _INDEX
     return {
-        "total_indexed": len(_INDEXED_RECORDS),
-        "total_rems": _LOCATIONS_CACHE.get("total_rems", 0),
-        "total_cities": _LOCATIONS_CACHE.get("total_cities", 0),
-        "updated_at": _UPDATED_AT,
-        "source": _SOURCE,
+        "total_indexed": len(idx.records),
+        "total_rems": idx.locations.get("total_rems", 0),
+        "total_cities": idx.locations.get("total_cities", 0),
+        "updated_at": idx.updated_at,
+        "source": idx.source,
     }
 
 
 def get_locations() -> Dict[str, Any]:
     """Returns all REMs and settlements grouped by REM for Zhytomyr Oblast."""
-    return _LOCATIONS_CACHE
+    return _INDEX.locations
 
 
+# ---------------------------------------------------------------------------
+# Search
+# ---------------------------------------------------------------------------
 def _match_house_in_record(
     rec: IndexedRecord, ht_canon: str, ht_base: str
 ) -> Tuple[int, Optional[str]]:
     """
-    Matches canonical house token against a record's houses.
     Returns (tier, matched_house_display):
-      tier 2 = exact canonical house match (e.g. '21' == '21', '63а' == '63-А')
-      tier 1 = variant/base match (e.g. query '15' matches '15/1' or '15-А', NEVER '150';
-               or query '15а' matches base '15')
+      tier 2 = exact canonical match ('21' == '21', '63а' == '63-А')
+      tier 1 = variant/base match ('15' -> '15/1' or '15-А', never '150'; '15а' -> '15')
       tier 0 = no match
     """
     if not ht_canon:
@@ -521,29 +588,26 @@ def _match_house_in_record(
     if ht_canon in rec.houses_canon_map:
         return 2, rec.houses_canon_map[ht_canon]
 
-    if ht_base and ht_canon == ht_base:
-        if ht_base in rec.houses_base_map:
-            return 1, rec.houses_base_map[ht_base]
-
-    if ht_base and ht_canon != ht_base:
-        if ht_base in rec.houses_canon_map:
-            return 1, rec.houses_canon_map[ht_base]
-        if ht_base in rec.houses_base_map:
-            return 1, rec.houses_base_map[ht_base]
+    if ht_base:
+        if ht_canon == ht_base:
+            if ht_base in rec.houses_base_map:
+                return 1, rec.houses_base_map[ht_base]
+        else:
+            if ht_base in rec.houses_canon_map:
+                return 1, rec.houses_canon_map[ht_base]
+            if ht_base in rec.houses_base_map:
+                return 1, rec.houses_base_map[ht_base]
 
     return 0, None
 
 
-def _format_result(
-    record: IndexedRecord, matched_house: Optional[str]
-) -> Dict[str, Any]:
+def _format_result(record: IndexedRecord, matched_house: Optional[str]) -> Dict[str, Any]:
     item = record.raw
     queue_code = record.queue_code
     queue_label = item.get(
         "queue_label",
         QUEUE_LABELS.get(queue_code, f"{queue_code // 10}.{queue_code % 10}"),
     )
-
     return {
         "id": item.get("id"),
         "rem": record.rem,
@@ -560,186 +624,163 @@ def _format_result(
     }
 
 
-def search_addresses(
-    query: str = "",
-    limit: int = 15,
-    rem: str = "",
-    city: str = "",
+def _prefix_words(vocab: List[str], prefix: str) -> List[str]:
+    """All vocabulary words starting with prefix (binary search on a sorted list)."""
+    out: List[str] = []
+    i = bisect.bisect_left(vocab, prefix)
+    n = len(vocab)
+    while i < n and vocab[i].startswith(prefix):
+        out.append(vocab[i])
+        i += 1
+    return out
+
+
+@lru_cache(maxsize=2048)
+def _fuzzy_vocab_matches(
+    version: int, tok_f: str
+) -> Tuple[FrozenSet[str], FrozenSet[str]]:
+    """Typo-tolerant matches computed ONCE per token over the unique vocabulary."""
+    idx = _INDEX
+    street = frozenset(difflib.get_close_matches(tok_f, idx.street_vocab, n=25, cutoff=0.76))
+    city = frozenset(difflib.get_close_matches(tok_f, idx.city_vocab, n=25, cutoff=0.78))
+    return street, city
+
+
+def _filter_ids(idx: _AddressIndex, rem: str, city: str) -> Optional[Set[int]]:
+    ids: Optional[Set[int]] = None
+    if rem:
+        ids = idx.by_rem.get(rem.lower(), set())
+    if city:
+        city_ids = idx.by_city.get(city.lower(), set())
+        ids = city_ids if ids is None else (ids & city_ids)
+    return ids
+
+
+def _search_impl(
+    idx: _AddressIndex, query: str, limit: int, rem: str, city: str
 ) -> List[Dict[str, Any]]:
-    """
-    Smart address search across all REMs and settlements of Zhytomyr Oblast.
-    """
-    clean_query = (query or "").strip()
-    rem_filter = (rem or "").strip()
-    city_filter = (city or "").strip()
+    records = idx.records
+    allowed = _filter_ids(idx, rem, city)
 
-    norm_rem_filter = normalize_text(rem_filter) if rem_filter else ""
-    norm_city_filter = normalize_text(city_filter) if city_filter else ""
-
-    pool: List[IndexedRecord] = []
-    for rec in _INDEXED_RECORDS:
-        if rem_filter:
-            if rec.rem.lower() != rem_filter.lower() and rec.norm_rem != norm_rem_filter:
-                continue
-        if city_filter:
-            if (
-                rec.city.lower() != city_filter.lower()
-                and rec.norm_city != norm_city_filter
-            ):
-                continue
-        pool.append(rec)
-
-    if not clean_query:
-        if city_filter or rem_filter:
-            sorted_pool = sorted(
-                pool,
+    # ── Empty query: browse selected settlement / REM, or default list ──
+    if not query:
+        if allowed is not None:
+            recs = sorted(
+                (records[i] for i in allowed),
                 key=lambda r: (
                     _city_sort_key(r.city),
-                    0
-                    if r.street.lower().startswith(
-                        ("вул", "пров", "просп", "майдан", "пл")
-                    )
-                    else 1,
+                    0 if r.is_residential else 1,
                     r.norm_street,
                     r.queue_code,
                 ),
             )
-            return [_format_result(rec, None) for rec in sorted_pool[:limit]]
+            return [_format_result(r, None) for r in recs[:limit]]
+        return [_format_result(records[i], None) for i in idx.default_ids[:limit]]
 
-        top = [
-            _format_result(rec, None) for rec in pool if rec.is_zhytomyr_city
-        ][:limit]
-        if len(top) < limit:
-            remaining = [
-                _format_result(rec, None) for rec in pool if not rec.is_zhytomyr_city
-            ][: (limit - len(top))]
-            top.extend(remaining)
-        return top
-
-    text_tokens, house_token = parse_search_query(clean_query)
+    text_tokens, house_token = parse_search_query(query)
     ht_canon = canonical_house(house_token) if house_token else ""
     m_base = HOUSE_BASE_DIGITS_RE.match(ht_canon) if ht_canon else None
     ht_base = m_base.group(1) if m_base else ""
 
-    tokens_folded = [fold_ukr(tok) for tok in text_tokens]
-    num_tokens = len(text_tokens)
+    # Fold tokens the same way record words were folded (hyphen -> space, і -> и ...)
+    tokens_f: List[str] = list(
+        dict.fromkeys(w for t in text_tokens for w in fold_ukr(t).split())
+    )
+    num_tokens = len(tokens_f)
 
+    # ── Candidate generation through the inverted index ──
+    token_info: List[Tuple[str, FrozenSet[str], FrozenSet[str]]] = []
+    if num_tokens > 0:
+        hit_counts: Counter = Counter()
+        for tok_f in tokens_f:
+            ids: Set[int] = set()
+            s_words = _prefix_words(idx.street_vocab, tok_f)
+            if len(tok_f) >= 3:
+                c_words = _prefix_words(idx.city_vocab, tok_f)
+            else:
+                c_words = [tok_f] if tok_f in idx.city_postings else []
+
+            for w in s_words:
+                ids |= idx.street_postings[w]
+            for w in c_words:
+                ids |= idx.city_postings[w]
+
+            fz_s: FrozenSet[str] = frozenset()
+            fz_c: FrozenSet[str] = frozenset()
+            if len(tok_f) >= 4:
+                # Similar word forms / typos ("київська" ~ "київське", "перемги" ~ "перемоги")
+                fz_s, fz_c = _fuzzy_vocab_matches(idx.version, tok_f)
+                for w in fz_s:
+                    ids |= idx.street_postings[w]
+                for w in fz_c:
+                    ids |= idx.city_postings[w]
+
+            token_info.append((tok_f, fz_s, fz_c))
+            hit_counts.update(ids)
+
+        required = num_tokens if num_tokens <= 2 else num_tokens - 1
+        candidate_ids = [rid for rid, c in hit_counts.items() if c >= required]
+        if allowed is not None:
+            candidate_ids = [rid for rid in candidate_ids if rid in allowed]
+    else:
+        # Query contains only a house number
+        candidate_ids = list(allowed) if allowed is not None else range(len(records))
+
+    # ── Scoring of the (small) candidate set ──
     raw_candidates: List[Tuple[float, int, Optional[str], IndexedRecord]] = []
 
-    for rec in pool:
+    for rid in candidate_ids:
+        rec = records[rid]
         base_score = 0.0
 
         if num_tokens > 0:
-            street_exact_hits = 0
-            street_prefix_hits = 0
-            city_exact_hits = 0
-            city_prefix_hits = 0
-            fuzzy_hits = 0
-            unmatched_tokens = 0
-
-            for idx, tok in enumerate(text_tokens):
-                tok_f = tokens_folded[idx]
-                is_street_exact = (
-                    tok in rec.street_words or tok_f in rec.street_folded_words
-                )
-                is_city_exact = (
-                    tok in rec.city_words or tok_f in rec.city_folded_words
-                )
-                is_street_prefix = not is_street_exact and any(
-                    sw.startswith(tok) or sw_f.startswith(tok_f)
-                    for sw, sw_f in zip(rec.street_words, rec.street_folded_words)
-                )
-                is_city_prefix = (
-                    not is_city_exact
-                    and len(tok) >= 3
-                    and any(
-                        cw.startswith(tok) or cw_f.startswith(tok_f)
-                        for cw, cw_f in zip(rec.city_words, rec.city_folded_words)
-                    )
-                )
-
-                if is_street_exact:
-                    street_exact_hits += 1
-                elif is_city_exact:
-                    city_exact_hits += 1
-                elif is_street_prefix:
-                    street_prefix_hits += 1
-                elif is_city_prefix:
-                    city_prefix_hits += 1
+            s_exact = s_pref = c_exact = c_pref = fuzzy = unmatched = 0
+            for tok_f, fz_s, fz_c in token_info:
+                if tok_f in rec.street_set:
+                    s_exact += 1
+                elif tok_f in rec.city_set:
+                    c_exact += 1
+                elif any(w.startswith(tok_f) for w in rec.street_words_f):
+                    s_pref += 1
+                elif len(tok_f) >= 3 and any(w.startswith(tok_f) for w in rec.city_words_f):
+                    c_pref += 1
+                elif (fz_s and not fz_s.isdisjoint(rec.street_set)) or (
+                    fz_c and not fz_c.isdisjoint(rec.city_set)
+                ):
+                    fuzzy += 1
                 else:
-                    matched_fuzzy = False
-                    if len(tok) >= 4:
-                        for sw, sw_f in zip(rec.street_words, rec.street_folded_words):
-                            if len(sw) < 3:
-                                continue
-                            ratio = max(
-                                difflib.SequenceMatcher(None, tok, sw).ratio(),
-                                difflib.SequenceMatcher(None, tok_f, sw_f).ratio(),
-                            )
-                            if ratio >= 0.76:
-                                fuzzy_hits += 1
-                                matched_fuzzy = True
-                                break
-                    if not matched_fuzzy and len(tok) >= 4:
-                        for cw, cw_f in zip(rec.city_words, rec.city_folded_words):
-                            if len(cw) < 3:
-                                continue
-                            ratio = max(
-                                difflib.SequenceMatcher(None, tok, cw).ratio(),
-                                difflib.SequenceMatcher(None, tok_f, cw_f).ratio(),
-                            )
-                            if ratio >= 0.78:
-                                fuzzy_hits += 1
-                                matched_fuzzy = True
-                                break
-                    if not matched_fuzzy:
-                        unmatched_tokens += 1
+                    unmatched += 1
 
-            if unmatched_tokens > 0:
-                if num_tokens <= 2 or unmatched_tokens > 1:
+            if unmatched > 0:
+                if num_tokens <= 2 or unmatched > 1:
                     continue
                 base_score -= 40.0
 
-            base_score += street_exact_hits * 95.0
-            base_score += street_prefix_hits * 70.0
-            base_score += fuzzy_hits * 35.0
+            base_score += s_exact * 95.0 + s_pref * 70.0 + fuzzy * 35.0
+            base_score += c_exact * 85.0 + c_pref * 55.0
 
-            base_score += city_exact_hits * 85.0
-            base_score += city_prefix_hits * 55.0
+            street_hit = (s_exact + s_pref) > 0
+            city_hit = (c_exact + c_pref) > 0
 
-            if (city_exact_hits + city_prefix_hits) > 0 and (
-                street_exact_hits + street_prefix_hits
-            ) > 0:
+            # Both settlement AND street matched ("Бердичів Житомирська")
+            if city_hit and street_hit:
                 base_score += 110.0
 
-            if (street_exact_hits + street_prefix_hits) > 0:
-                first_street_word = rec.street_words[0] if rec.street_words else ""
-                first_street_fold = (
-                    rec.street_folded_words[0] if rec.street_folded_words else ""
-                )
-                if any(
-                    first_street_word == t or first_street_fold == tf
-                    for t, tf in zip(text_tokens, tokens_folded)
-                ):
+            if street_hit:
+                first_word = rec.street_words_f[0] if rec.street_words_f else ""
+                if first_word in tokens_f:
                     base_score += 35.0
-                elif any(
-                    first_street_word.startswith(t) or first_street_fold.startswith(tf)
-                    for t, tf in zip(text_tokens, tokens_folded)
-                ):
+                elif any(first_word.startswith(t) for t in tokens_f):
                     base_score += 20.0
-                base_score -= min(len(rec.street_words), 5) * 2.0
+                base_score -= min(len(rec.street_words_f), 5) * 2.0
             else:
-                if rec.street.lower().startswith(
-                    ("вул", "пров", "просп", "майдан", "пл")
-                ):
+                # Only the settlement matched ("Станишівка"): prefer real residential streets
+                if rec.is_residential:
                     base_score += 15.0 + min(len(rec.houses_canon_map), 25) * 0.4
                 else:
                     base_score -= 20.0
 
-            if (
-                not city_filter
-                and (city_exact_hits == 0 and city_prefix_hits == 0)
-            ):
+            if not city and not city_hit:
                 if rec.is_zhytomyr_city:
                     base_score += 28.0
                 elif rec.is_major_city:
@@ -759,21 +800,22 @@ def search_addresses(
         if base_score > 0:
             raw_candidates.append((base_score, house_tier, matched_house, rec))
 
+    # Multi-queue disambiguation: if some queue of the same street contains the house,
+    # drop the other queues of that street that don't.
     if ht_canon and raw_candidates:
-        best_tier_by_street: Dict[Tuple[str, str, str], int] = {}
+        best_tier: Dict[Tuple[str, str, str], int] = {}
         for _, h_tier, _, rec in raw_candidates:
             key = (rec.rem, rec.city, rec.street)
-            if h_tier > best_tier_by_street.get(key, 0):
-                best_tier_by_street[key] = h_tier
-
-        filtered_candidates: List[Tuple[float, int, Optional[str], IndexedRecord]] = []
-        for score, h_tier, m_house, rec in raw_candidates:
-            key = (rec.rem, rec.city, rec.street)
-            max_tier = best_tier_by_street.get(key, 0)
-            if max_tier > 0 and h_tier < max_tier:
-                continue
-            filtered_candidates.append((score, h_tier, m_house, rec))
-        raw_candidates = filtered_candidates
+            if h_tier > best_tier.get(key, 0):
+                best_tier[key] = h_tier
+        raw_candidates = [
+            c
+            for c in raw_candidates
+            if not (
+                best_tier.get((c[3].rem, c[3].city, c[3].street), 0) > 0
+                and c[1] < best_tier[(c[3].rem, c[3].city, c[3].street)]
+            )
+        ]
 
     raw_candidates.sort(
         key=lambda c: (
@@ -786,6 +828,42 @@ def search_addresses(
     )
 
     return [_format_result(rec, mh) for _, _, mh, rec in raw_candidates[:limit]]
+
+
+@lru_cache(maxsize=1024)
+def _search_cached(
+    version: int, query: str, limit: int, rem: str, city: str
+) -> Tuple[Dict[str, Any], ...]:
+    return tuple(_search_impl(_INDEX, query, limit, rem, city))
+
+
+def search_addresses(
+    query: str = "",
+    limit: int = 15,
+    rem: str = "",
+    city: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Smart address search across all REMs and settlements of Zhytomyr Oblast.
+    Uses an inverted word index + LRU result cache. Pure CPU work: call it through
+    `asyncio.to_thread` (or `search_addresses_async`) from async code.
+    """
+    return list(
+        _search_cached(
+            _INDEX.version,
+            (query or "").strip(),
+            int(limit),
+            (rem or "").strip(),
+            (city or "").strip(),
+        )
+    )
+
+
+async def search_addresses_async(
+    query: str = "", limit: int = 15, rem: str = "", city: str = ""
+) -> List[Dict[str, Any]]:
+    """Non-blocking wrapper for FastAPI endpoints."""
+    return await asyncio.to_thread(search_addresses, query, limit, rem, city)
 
 
 # ---------------------------------------------------------------------------
@@ -802,8 +880,16 @@ def _is_cache_expired(updated_at: Optional[str]) -> bool:
             dt = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return True
-    age = (datetime.now() - dt).total_seconds()
-    return age >= CACHE_MAX_AGE_SECONDS
+    return (datetime.now() - dt).total_seconds() >= CACHE_MAX_AGE_SECONDS
+
+
+def _decode_redis_payload(raw: str) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        items = data.get("items")
+        if isinstance(items, list) and items:
+            return items, data.get("updated_at")
+    return None, None
 
 
 async def _load_from_redis() -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -815,12 +901,8 @@ async def _load_from_redis() -> Tuple[Optional[List[Dict[str, Any]]], Optional[s
         raw = await redis_client.get(REDIS_ADDRESSES_KEY)
         if not raw:
             return None, None
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            items = data.get("items")
-            updated_at = data.get("updated_at")
-            if isinstance(items, list) and len(items) > 0:
-                return items, updated_at
+        # Parsing several MB of JSON is CPU work -> worker thread
+        return await asyncio.to_thread(_decode_redis_payload, raw)
     except Exception as exc:
         log.warning("Failed to load addresses cache from Redis: %s", exc)
     return None, None
@@ -832,12 +914,9 @@ async def _save_to_redis(records: List[Dict[str, Any]], updated_at: str) -> bool
     if not redis_client:
         return False
     try:
-        payload = json.dumps(
-            {
-                "updated_at": updated_at,
-                "source": "ztoe_live",
-                "items": records,
-            },
+        payload = await asyncio.to_thread(
+            json.dumps,
+            {"updated_at": updated_at, "source": "ztoe_live", "items": records},
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -849,16 +928,61 @@ async def _save_to_redis(records: List[Dict[str, Any]], updated_at: str) -> bool
         return False
 
 
+def _parse_ztoe_html(
+    html: str, pidcherga_id: int
+) -> List[Tuple[str, str, str, int, List[str]]]:
+    """CPU-heavy BeautifulSoup parsing of one ZTOE page. Runs in a worker thread."""
+    soup = BeautifulSoup(html, "html.parser")
+    target_table = None
+    for tbl in soup.find_all("table"):
+        if tbl.find("table"):
+            continue
+        first_tr = tbl.find("tr")
+        if first_tr and "Населений пункт" in first_tr.get_text():
+            target_table = tbl
+            break
+
+    if not target_table:
+        log.warning("No innermost address table found for pidcherga %s", pidcherga_id)
+        return []
+
+    parsed_rows: List[Tuple[str, str, str, int, List[str]]] = []
+    for row in target_table.find_all("tr")[1:]:
+        tds = row.find_all("td")
+        if len(tds) < 6:
+            continue
+
+        rem = tds[0].get_text(strip=True)
+        city = tds[1].get_text(strip=True)
+        street = tds[2].get_text(strip=True)
+        houses_raw = tds[3].get_text(strip=True)
+        cherga_str = tds[4].get_text(strip=True)
+        pidcherga_str = tds[5].get_text(strip=True)
+
+        if "РЕМ" in rem or "Населений пункт" in city:
+            continue
+
+        if cherga_str.isdigit() and pidcherga_str.isdigit():
+            queue_code = int(cherga_str) * 10 + int(pidcherga_str)
+        else:
+            queue_code = tools.index_to_queue(pidcherga_id)
+
+        raw_houses = [h.strip() for h in re.split(r"[,;]+", houses_raw) if h.strip()]
+        parsed_rows.append((rem, city, street, queue_code, raw_houses))
+
+    return parsed_rows
+
+
 async def sync_addresses_from_ztoe() -> bool:
     """
     Downloads addresses from https://www.ztoe.com.ua/unhooking-search.php?pidcherga_id={1..12}.
-    If ZTOE is available, updates the in-memory index and saves to Redis.
+    If ZTOE is available, rebuilds the in-memory index and saves to Redis.
     If ZTOE is unavailable, leaves the existing Redis cache and in-memory index untouched.
     """
     lock = _get_sync_lock()
     if lock.locked():
         async with lock:
-            return bool(_INDEXED_RECORDS)
+            return bool(_INDEX.records)
 
     async with lock:
         log.info("Starting full oblast addresses synchronization from ztoe.com.ua...")
@@ -882,113 +1006,59 @@ async def sync_addresses_from_ztoe() -> bool:
                 try:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status != 200:
-                            log.warning(
-                                "ZTOE responded with status %s for %s", resp.status, url
-                            )
+                            log.warning("ZTOE responded with status %s for %s", resp.status, url)
                             return []
                         raw_bytes = await resp.read()
-                        html = raw_bytes.decode("cp1251", errors="ignore")
                 except Exception as req_err:
-                    log.warning(
-                        "Error fetching ZTOE pidcherga %s: %s", pidcherga_id, req_err
-                    )
+                    log.warning("Error fetching ZTOE pidcherga %s: %s", pidcherga_id, req_err)
                     return []
 
-            soup = BeautifulSoup(html, "html.parser")
-            target_table = None
-            for tbl in soup.find_all("table"):
-                if tbl.find("table"):
-                    continue
-                first_tr = tbl.find("tr")
-                if first_tr and "Населений пункт" in first_tr.get_text():
-                    target_table = tbl
-                    break
-
-            if not target_table:
-                log.warning(
-                    "No innermost address table found for pidcherga %s", pidcherga_id
-                )
+            html = raw_bytes.decode("cp1251", errors="ignore")
+            try:
+                return await asyncio.to_thread(_parse_ztoe_html, html, pidcherga_id)
+            except Exception as parse_err:
+                log.warning("Error parsing ZTOE pidcherga %s: %s", pidcherga_id, parse_err)
                 return []
 
-            parsed_rows: List[Tuple[str, str, str, int, List[str]]] = []
-            for row in target_table.find_all("tr")[1:]:
-                tds = row.find_all("td")
-                if len(tds) < 6:
-                    continue
-
-                rem = tds[0].get_text(strip=True)
-                city = tds[1].get_text(strip=True)
-                street = tds[2].get_text(strip=True)
-                houses_raw = tds[3].get_text(strip=True)
-                cherga_str = tds[4].get_text(strip=True)
-                pidcherga_str = tds[5].get_text(strip=True)
-
-                if "РЕМ" in rem or "Населений пункт" in city:
-                    continue
-
-                if cherga_str.isdigit() and pidcherga_str.isdigit():
-                    queue_code = int(cherga_str) * 10 + int(pidcherga_str)
-                else:
-                    queue_code = tools.index_to_queue(pidcherga_id)
-
-                raw_houses = [
-                    h.strip() for h in re.split(r"[,;]+", houses_raw) if h.strip()
-                ]
-                parsed_rows.append((rem, city, street, queue_code, raw_houses))
-
-            return parsed_rows
-
-        grouped_addresses: Dict[Tuple[str, str, str, int], Dict[str, None]] = {}
-
+        grouped: Dict[Tuple[str, str, str, int], Dict[str, None]] = {}
         try:
-            async with aiohttp.ClientSession(
-                timeout=timeout, connector=connector
-            ) as session:
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 results = await asyncio.gather(
                     *(fetch_pidcherga(session, pid) for pid in range(1, 13))
                 )
-                for pid_rows in results:
-                    for rem, city, street, queue_code, raw_houses in pid_rows:
-                        group_key = (rem, city, street, queue_code)
-                        if group_key not in grouped_addresses:
-                            grouped_addresses[group_key] = {}
-                        for h in raw_houses:
-                            grouped_addresses[group_key][h] = None
+            for pid_rows in results:
+                for rem, city, street, queue_code, raw_houses in pid_rows:
+                    bucket = grouped.setdefault((rem, city, street, queue_code), {})
+                    for h in raw_houses:
+                        bucket[h] = None
         except Exception as exc:
-            log.warning(
-                "sync_addresses_from_ztoe encountered an unexpected error: %s", exc
-            )
+            log.warning("sync_addresses_from_ztoe encountered an unexpected error: %s", exc)
 
-        if len(grouped_addresses) < 100:
+        if len(grouped) < 100:
             log.warning(
                 "ZTOE website unavailable or returned incomplete data (%d records). "
                 "Keeping existing Redis cache untouched.",
-                len(grouped_addresses),
+                len(grouped),
             )
             return False
 
-        records: List[Dict[str, Any]] = []
-        for idx, ((rem, city, street, queue_code), houses_dict) in enumerate(
-            grouped_addresses.items(), start=1
-        ):
-            houses_list = list(houses_dict.keys())
-            queue_lbl = QUEUE_LABELS.get(
-                queue_code, f"{queue_code // 10}.{queue_code % 10}"
-            )
-            records.append(
-                {
-                    "id": idx,
-                    "rem": rem,
-                    "city": city,
-                    "street": street,
-                    "houses": houses_list,
-                    "queue": queue_code,
-                    "queue_label": queue_lbl,
-                }
-            )
+        records: List[Dict[str, Any]] = [
+            {
+                "id": i,
+                "rem": rem,
+                "city": city,
+                "street": street,
+                "houses": list(houses.keys()),
+                "queue": queue_code,
+                "queue_label": QUEUE_LABELS.get(
+                    queue_code, f"{queue_code // 10}.{queue_code % 10}"
+                ),
+            }
+            for i, ((rem, city, street, queue_code), houses) in enumerate(grouped.items(), start=1)
+        ]
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        _set_indexed_addresses(records, updated_at=now_str, source="ztoe_live")
+        await _set_indexed_addresses_async(records, updated_at=now_str, source="ztoe_live")
         await _save_to_redis(records, now_str)
         return True
 
@@ -996,18 +1066,15 @@ async def sync_addresses_from_ztoe() -> bool:
 async def ensure_addresses_loaded() -> None:
     """
     Startup & on-demand loader:
-    1. Checks if Redis has cached addresses ('ztoe_addresses_cache').
-    2. If found in Redis:
-       - Immediately loads them into memory.
-       - Checks the cache date ('updated_at'): if older than 12 hours, fetches fresh
-         data from ztoe.com.ua (and if the site is down, keeps the Redis cache).
-    3. If NOT found in Redis:
-       - Immediately parses ztoe.com.ua and saves the result to Redis.
+    1. Checks Redis for cached addresses ('ztoe_addresses_cache').
+    2. If found: loads them into memory immediately; if older than 12h, fetches fresh
+       data from ztoe.com.ua (if the site is down, the Redis cache stays in use).
+    3. If not found: parses ztoe.com.ua right away and saves the result to Redis.
     """
     items, updated_at = await _load_from_redis()
 
     if items:
-        _set_indexed_addresses(items, updated_at=updated_at, source="redis_cache")
+        await _set_indexed_addresses_async(items, updated_at=updated_at, source="redis_cache")
         if _is_cache_expired(updated_at):
             log.info(
                 "Redis address cache is outdated (updated_at=%s). Fetching fresh data from ZTOE...",
@@ -1021,7 +1088,20 @@ async def ensure_addresses_loaded() -> None:
                 updated_at,
             )
     else:
-        log.info(
-            "No addresses found in Redis cache. Parsing ztoe.com.ua immediately..."
-        )
+        log.info("No addresses found in Redis cache. Parsing ztoe.com.ua immediately...")
         await sync_addresses_from_ztoe()
+
+
+def trigger_background_load() -> None:
+    """
+    Fire-and-forget loading when the index is empty. Never blocks a request and
+    is rate-limited, so a ZTOE outage can't cause a sync storm.
+    """
+    global _BG_TASK, _LAST_BG_ATTEMPT
+    if _BG_TASK is not None and not _BG_TASK.done():
+        return
+    now = time.monotonic()
+    if _LAST_BG_ATTEMPT and now - _LAST_BG_ATTEMPT < BACKGROUND_RETRY_SECONDS:
+        return
+    _LAST_BG_ATTEMPT = now
+    _BG_TASK = asyncio.create_task(ensure_addresses_loaded())
