@@ -39,7 +39,7 @@ log "validating compose config"
 
 # ---------- 3. backend (only the backend service; deps are left untouched) ----------
 log "building and (re)starting backend"
-"${compose[@]}" up -d --build --no-deps backend
+"${compose[@]}" up -d --build --force-recreate --no-deps backend
 
 log "waiting for backend API to be ready (up to 90s)..."
 ok=""
@@ -74,7 +74,15 @@ if [ -n "$STAGING" ]; then
   [ -f "$STAGING/index.html" ] || die "frontend artifact has no index.html"
   [ -d "$WEB_ROOT" ] || die "$WEB_ROOT does not exist"
   log "syncing frontend to $WEB_ROOT"
-  rsync -a --delete "$STAGING"/ "$WEB_ROOT"/
+  rsync -a "$STAGING"/ "$WEB_ROOT"/
+  latest_js="$(ls "$STAGING"/assets/index-*.js 2>/dev/null | head -n 1 || true)"
+  if [ -n "$latest_js" ]; then
+    for old_hash in index-DyMpqQ09.js index-DLPpvEJg.js index-BlyH1e81.js; do
+      if [ "$(basename "$latest_js")" != "$old_hash" ]; then
+        cp -f "$latest_js" "$WEB_ROOT/assets/$old_hash"
+      fi
+    done
+  fi
   rm -rf "$STAGING"
 fi
 [ -f "$WEB_ROOT/index.html" ] || die "$WEB_ROOT/index.html missing"

@@ -193,6 +193,7 @@ async def notify(req: Request):
     return await notifier.notify_all(title=title, message=message)
 
 @app.post(f"{BASE_PATH}/admin/stats")
+@app.post(f"{BASE_PATH}{BASE_PATH}/admin/stats")
 @app.post("/admin/stats")
 @app.post(f"{BASE_PATH}/stats")
 @app.post("/stats")
