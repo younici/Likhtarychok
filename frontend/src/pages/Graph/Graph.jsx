@@ -14,6 +14,20 @@ import styles from './Graph.module.css';
 
 const defaultStatuses = Array(48).fill(false);
 
+function loadSavedAddressQueueFromStorage() {
+  if (typeof window === 'undefined') return null;
+  try {
+    const savedAddr = localStorage.getItem('savedUserAddress');
+    if (!savedAddr) return null;
+    const parsed = JSON.parse(savedAddr);
+    const q = parsed?.queue != null ? String(parsed.queue) : '';
+    if (q && queueOptions.includes(q)) return q;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 function hasSavedQueueInStorage() {
   if (typeof window === 'undefined') return false;
   try {
@@ -27,11 +41,33 @@ function hasSavedQueueInStorage() {
   return false;
 }
 
+function loadSelectionTabFromStorage() {
+  if (typeof window === 'undefined') return 'address';
+  try {
+    const savedTab = localStorage.getItem('queueSelectionTab');
+    if (savedTab === 'address' || savedTab === 'queue') return savedTab;
+
+    const savedQ = localStorage.getItem('queueSelector');
+    const savedAddrQ = loadSavedAddressQueueFromStorage();
+    if (savedAddrQ && savedQ && queueOptions.includes(savedQ) && savedAddrQ !== savedQ) {
+      return 'queue';
+    }
+  } catch {
+    /* ignore */
+  }
+  return 'address';
+}
+
 function loadQueueFromStorage() {
   if (typeof window === 'undefined') return '31';
   try {
+    const savedTab = localStorage.getItem('queueSelectionTab');
+    const savedAddrQ = loadSavedAddressQueueFromStorage();
+    if (savedTab === 'address' && savedAddrQ) return savedAddrQ;
+
     const saved = localStorage.getItem('queueSelector');
     if (saved && queueOptions.includes(saved)) return saved;
+    if (savedAddrQ) return savedAddrQ;
   } catch (_) {
     /* ignore */
   }
@@ -605,7 +641,7 @@ export default function Graph() {
   const [isQueuePreselected] = useState(() => hasSavedQueueInStorage());
   const [queue, setQueue] = useState(() => loadQueueFromStorage());
   const [viewMode, setViewMode] = useState(() => loadViewModeFromStorage());
-  const [selectionTab, setSelectionTab] = useState('address'); // 'address' | 'queue'
+  const [selectionTab, setSelectionTab] = useState(() => loadSelectionTabFromStorage()); // 'address' | 'queue'
   const [statuses, setStatuses] = useState(defaultStatuses);
   const [source, setSource] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -618,13 +654,33 @@ export default function Graph() {
   }, []);
 
   const handleSelectQueue = useCallback((newQueue) => {
-    setQueue(newQueue);
+    const normalized = String(newQueue ?? '');
+    if (!queueOptions.includes(normalized)) return;
+    setQueue(normalized);
     try {
-      localStorage.setItem('queueSelector', newQueue);
+      localStorage.setItem('queueSelector', normalized);
     } catch (_) {
       /* ignore */
     }
   }, []);
+
+  const handleSelectTab = useCallback(
+    (tab) => {
+      setSelectionTab(tab);
+      try {
+        localStorage.setItem('queueSelectionTab', tab);
+      } catch {
+        /* ignore */
+      }
+      if (tab === 'address') {
+        const savedAddrQueue = loadSavedAddressQueueFromStorage();
+        if (savedAddrQueue) {
+          handleSelectQueue(savedAddrQueue);
+        }
+      }
+    },
+    [handleSelectQueue]
+  );
 
   const handleSelectViewMode = useCallback((mode) => {
     setViewMode(mode);
@@ -698,7 +754,7 @@ export default function Graph() {
             className={`${styles.subTabBtn} ${
               selectionTab === 'address' ? styles.subTabBtnActive : ''
             }`}
-            onClick={() => setSelectionTab('address')}
+            onClick={() => handleSelectTab('address')}
           >
             Пошук за адресою
           </button>
@@ -707,7 +763,7 @@ export default function Graph() {
             className={`${styles.subTabBtn} ${
               selectionTab === 'queue' ? styles.subTabBtnActive : ''
             }`}
-            onClick={() => setSelectionTab('queue')}
+            onClick={() => handleSelectTab('queue')}
           >
             Ручний вибір
           </button>

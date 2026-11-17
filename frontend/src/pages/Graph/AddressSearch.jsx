@@ -149,8 +149,10 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
   const handleSelect = useCallback(
     (item) => {
       if (!item) return;
+      const normalizedQueue = item.queue != null ? String(item.queue) : item.queue;
       const chosen = {
         ...item,
+        queue: normalizedQueue,
         matched_house: item.matched_house || null,
       };
 
@@ -443,7 +445,7 @@ export default function AddressSearch({ onSelectQueue, currentQueue }) {
                 const isSelected = selectedIndex === idx;
                 const itemQueueLabel =
                   item.queue_label || `${item.queue?.[0]}.${item.queue?.[1]}`;
-                const isCurrentActiveQueue = item.queue === currentQueue;
+                const isCurrentActiveQueue = String(item.queue) === String(currentQueue);
 
                 return (
                   <li
