@@ -1,108 +1,132 @@
-from untils.variebles import QUEUE_LABELS
-import untils.tools as tools
 import asyncio
 import json
-from untils.redis_db import get_redis_client
 import logging
+import time
+
+import untils.tools as tools
+from untils.redis_db import get_redis_client
 
 log = logging.getLogger(__name__)
 
-_cache_queue = []
+REDIS_KEY = "cache_schedule"
 
-_all_index = []
-_all_bias = []
+# {"date": "dd.mm.yyyy" | None, "queues": {"11": [...48], ...}}
+_cache: dict | None = None
+_lock = asyncio.Lock()
+_first_boot = True
 
-first_boot = True
+# Min seconds between on-demand refreshes when the cached schedule is not for today.
+ON_DEMAND_MIN_INTERVAL = 60
+_last_on_demand = 0.0
 
-for queue_label in QUEUE_LABELS:
-    idx = tools.queue_to_index(queue_label)
-    _all_index.append(idx)
-    _all_bias.append(tools.bias_from_index(idx))
 
-getting_status = False
+def _is_fresh(data: dict | None) -> bool:
+    """Cache is usable only if it belongs to today's schedule."""
+    if not data or not data.get("queues"):
+        return False
+    date = data.get("date")
+    return date is None or date == tools.today_str()
 
-async def _save_cache_to_redis(data_to_save: list):
+
+def _normalize(data: dict) -> dict:
+    return {
+        "date": data.get("date"),
+        "queues": {str(k): list(v) for k, v in (data.get("queues") or {}).items()},
+    }
+
+
+async def _save_cache_to_redis(data: dict):
     redis = get_redis_client()
-    if not redis:
+    if not redis or not data:
         return
-    if data_to_save:
-        try:
-            await redis.set("cache_queue", json.dumps(data_to_save))
-            log.info("Cache saved to Redis")
-        except Exception as e:
-            log.error(f"Redis save error: {e}")
+    try:
+        await redis.set(REDIS_KEY, json.dumps(data))
+        log.info("Schedule cache saved to Redis")
+    except Exception as e:
+        log.error(f"Redis save error: {e}")
 
-async def _get_cahce_from_redis() -> list | None:
+
+async def _get_cache_from_redis() -> dict | None:
     redis = get_redis_client()
     if not redis:
         return None
     try:
-        data = await redis.get("cache_queue")
-        if data:
-            return json.loads(data)
+        raw = await redis.get(REDIS_KEY)
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
     except Exception as e:
         log.error(f"Redis load error: {e}")
     return None
 
+
 async def cache_loop():
-    global getting_status
-    global _cache_queue
-    global first_boot
-    
-    if getting_status:
+    """Downloads the ZTOE page once and refreshes the schedule for all queues."""
+    global _cache, _first_boot
+
+    if _lock.locked():
+        # Another refresh is in progress: wait for it instead of returning stale/empty data.
+        async with _lock:
+            return
+
+    async with _lock:
+        if _first_boot:
+            _first_boot = False
+            data = await _get_cache_from_redis()
+            if _is_fresh(data):
+                _cache = _normalize(data)
+                log.info("Schedule cache loaded from Redis")
+
+        try:
+            schedule = await tools.get_schedule()
+        except Exception as e:
+            log.error(f"Error in cache_loop: {e!r}")
+            schedule = None
+
+        if not schedule:
+            log.warning("Schedule fetch/parse failed, keeping previous cache")
+            return
+
+        new_cache = _normalize(schedule)
+
+        # If some queues failed to parse, keep their previous values for the same day.
+        if _cache and _cache.get("date") == new_cache["date"]:
+            for code, value in _cache["queues"].items():
+                new_cache["queues"].setdefault(code, value)
+
+        _cache = new_cache
+        log.info(f"Schedule cache updated: date={_cache['date']}, queues={len(_cache['queues'])}")
+        await _save_cache_to_redis(_cache)
+
+
+async def _refresh_if_stale():
+    global _last_on_demand
+    if _is_fresh(_cache):
         return
+    now = time.monotonic()
+    if _cache and now - _last_on_demand < ON_DEMAND_MIN_INTERVAL:
+        return
+    _last_on_demand = now
+    await cache_loop()
 
-    getting_status = True
-    
-    if first_boot:
-        first_boot = False
-        data = await _get_cahce_from_redis()
-        if data:
-            _cache_queue = data
-            log.info("Cache loaded from redis")
 
-    new_cache = []
-    
-    try:
-        failed = 0
-        for pos, (queue, bias) in enumerate(zip(_all_index, _all_bias)):
-            log.info(f"getting cache for queue_idx: {queue} (bias: {bias})")
-            status = await tools.get_status(queue, bias)
-            
-            if status is None:
-                log.warning(f"Got None for queue index {queue}, keeping old value")
-                failed += 1
-                old = _cache_queue[pos] if pos < len(_cache_queue) else ""
-                new_cache.append(old)
-            else:
-                new_cache.append(status)
-                
-            await asyncio.sleep(1)
-        if failed == len(_all_index):
-            log.warning("All fetches failed, cache left untouched")
-        elif new_cache and len(new_cache) == len(_all_index):
-            _cache_queue = new_cache
-            await _save_cache_to_redis(_cache_queue)
-        else:
-            log.warning(f"Cache incomplete. Got {len(new_cache)}, expected {len(_all_index)}")
+async def get_cache(queue_code: int) -> list[int] | None:
+    """Returns 48 slot statuses (1 = outage) for queue code like 11, 12 ... 62."""
+    await _refresh_if_stale()
 
-    except Exception as e:
-        log.error(f"Error in cache_loop: {e}")
-    finally:
-        getting_status = False
+    if not _cache:
+        return None
 
-async def get_cache(queue):
-    if not _cache_queue:
-        await cache_loop()
-    list_idx = queue - 1
-    
-    if 0 <= list_idx < len(_cache_queue):
-        return _cache_queue[list_idx]
-    
-    log.error(f"Queue index {queue} out of range (cache len: {len(_cache_queue)})")
-    return None
+    if not _is_fresh(_cache):
+        log.warning(f"Serving schedule for {_cache.get('date')}, today is {tools.today_str()}")
 
-async def get_all_cache():
-    if not _cache_queue:
-        await cache_loop()
-    return _cache_queue
+    status = _cache["queues"].get(str(queue_code))
+    if status is None:
+        log.error(f"Queue {queue_code} not found in cache")
+    return status
+
+
+async def get_all_cache() -> dict:
+    await _refresh_if_stale()
+    return dict((_cache or {}).get("queues") or {})

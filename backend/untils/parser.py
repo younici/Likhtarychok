@@ -1,11 +1,9 @@
-from bs4 import BeautifulSoup
-
 import untils.cache as cache
 import untils.tools as tools
 
 import os
 
-CAN_CACHE = os.getenv("CAN_CACHE") == "true"
+CAN_CACHE = os.getenv("CAN_CACHE", "true").lower() == "true"
 
 import logging
 
@@ -13,41 +11,18 @@ log = logging.getLogger(__name__)
 
 log.info(f"cache status: {CAN_CACHE}")
 
-async def parse(queue: int):
-    queue = tools.queue_to_index(queue)
-    bias = tools.bias_from_index(queue)
 
-    text = ""
+async def parse(queue: int):
+    """
+    Returns a list of 48 half-hour slots for queue code (11, 12 ... 62):
+    1 - outage, 0 - power is on. None if data is unavailable.
+    """
+    queue = int(queue)
 
     if CAN_CACHE:
-        text = await cache.get_cache(queue)
-        log.info("cache used")
-    else:
-        text = await tools.get_status(queue, bias)
+        return await cache.get_cache(queue)
 
-    if text is None:
+    schedule = await tools.get_schedule()
+    if not schedule:
         return None
-
-    status = []
-    colors = []
-
-    html = BeautifulSoup(text, "html.parser")
-
-    for i in html:
-        style = i.get("style", "")
-        color = None
-
-        for part in style.split(";"):
-            part = part.strip()
-            if part.startswith("background"):
-                color = part.split(":", 1)[1].strip()
-                break
-
-        colors.append(color)
-
-    for c in colors:
-        if c == "#ffffff":
-            status.append(0)
-        else:
-            status.append(1)
-    return status
+    return schedule["queues"].get(queue)
