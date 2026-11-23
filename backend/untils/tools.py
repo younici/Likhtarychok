@@ -46,7 +46,7 @@ async def fetch_page() -> str | None:
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
     }
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=20, connect=10)
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:

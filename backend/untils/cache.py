@@ -100,15 +100,29 @@ async def cache_loop():
         await _save_cache_to_redis(_cache)
 
 
+_refresh_task: asyncio.Task | None = None
+REQUEST_WAIT_TIMEOUT = 8
+
+
 async def _refresh_if_stale():
-    global _last_on_demand
+    """Never blocks an API request for long: refresh runs as a background task."""
+    global _last_on_demand, _refresh_task
     if _is_fresh(_cache):
         return
-    now = time.monotonic()
-    if _cache and now - _last_on_demand < ON_DEMAND_MIN_INTERVAL:
-        return
-    _last_on_demand = now
-    await cache_loop()
+
+    if _refresh_task is None or _refresh_task.done():
+        now = time.monotonic()
+        if now - _last_on_demand < ON_DEMAND_MIN_INTERVAL:
+            return
+        _last_on_demand = now
+        _refresh_task = asyncio.create_task(cache_loop())
+
+    try:
+        await asyncio.wait_for(asyncio.shield(_refresh_task), REQUEST_WAIT_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.warning("Schedule refresh is slow, answering with current cache")
+    except Exception as e:
+        log.error(f"Schedule refresh failed: {e!r}")
 
 
 async def get_cache(queue_code: int) -> list[int] | None:
