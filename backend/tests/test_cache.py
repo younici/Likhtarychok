@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from untils import cache
+from untils import cache, tools
 
 
 def test_request_does_not_hang_when_source_hangs(monkeypatch):
@@ -26,3 +26,23 @@ def test_request_does_not_hang_when_source_hangs(monkeypatch):
     results, elapsed = asyncio.run(run())
     assert results == [None] * 5
     assert elapsed < 2
+
+
+def test_warmup_populates_cache(monkeypatch):
+    today = tools.today_str()
+    sample_slots = [1 if i % 4 == 0 else 0 for i in range(48)]
+
+    async def fake_schedule():
+        return {"date": today, "queues": {11: sample_slots, 12: [0] * 48}}
+
+    monkeypatch.setattr(cache.tools, "get_schedule", fake_schedule)
+    monkeypatch.setattr(cache, "_cache", None)
+    monkeypatch.setattr(cache, "_refresh_task", None)
+    monkeypatch.setattr(cache, "_last_on_demand", 0.0)
+    monkeypatch.setattr(cache, "_first_boot", False)
+    monkeypatch.setattr(cache, "_lock", asyncio.Lock())
+
+    asyncio.run(cache.warmup())
+    assert cache._cache is not None
+    assert cache._cache["date"] == today
+    assert asyncio.run(cache.get_cache(11)) == sample_slots

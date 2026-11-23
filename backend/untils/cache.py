@@ -15,9 +15,13 @@ _cache: dict | None = None
 _lock = asyncio.Lock()
 _first_boot = True
 
-# Min seconds between on-demand refreshes when the cached schedule is not for today.
+# Min seconds between on-demand refreshes when the cached schedule is stale/empty.
 ON_DEMAND_MIN_INTERVAL = 60
+EMPTY_CACHE_RETRY_INTERVAL = 15
 _last_on_demand = 0.0
+
+_refresh_task: asyncio.Task | None = None
+REQUEST_WAIT_TIMEOUT = 10
 
 
 def _is_fresh(data: dict | None) -> bool:
@@ -61,9 +65,22 @@ async def _get_cache_from_redis() -> dict | None:
     return None
 
 
+async def _load_initial_from_redis():
+    global _cache, _first_boot
+    if not _first_boot:
+        return
+    _first_boot = False
+    data = await _get_cache_from_redis()
+    if _is_fresh(data):
+        _cache = _normalize(data)
+        log.info("Schedule cache loaded from Redis (date=%s)", _cache.get("date"))
+
+
 async def cache_loop():
     """Downloads the ZTOE page once and refreshes the schedule for all queues."""
-    global _cache, _first_boot
+    global _cache
+
+    await _load_initial_from_redis()
 
     if _lock.locked():
         # Another refresh is in progress: wait for it instead of returning stale/empty data.
@@ -71,13 +88,6 @@ async def cache_loop():
             return
 
     async with _lock:
-        if _first_boot:
-            _first_boot = False
-            data = await _get_cache_from_redis()
-            if _is_fresh(data):
-                _cache = _normalize(data)
-                log.info("Schedule cache loaded from Redis")
-
         try:
             schedule = await tools.get_schedule()
         except Exception as e:
@@ -100,19 +110,26 @@ async def cache_loop():
         await _save_cache_to_redis(_cache)
 
 
-_refresh_task: asyncio.Task | None = None
-REQUEST_WAIT_TIMEOUT = 8
+async def warmup():
+    """Preload fresh cache from Redis and immediately trigger a live fetch on startup."""
+    await _load_initial_from_redis()
+    await cache_loop()
 
 
 async def _refresh_if_stale():
     """Never blocks an API request for long: refresh runs as a background task."""
     global _last_on_demand, _refresh_task
+
+    if _first_boot:
+        await _load_initial_from_redis()
+
     if _is_fresh(_cache):
         return
 
     if _refresh_task is None or _refresh_task.done():
         now = time.monotonic()
-        if now - _last_on_demand < ON_DEMAND_MIN_INTERVAL:
+        min_interval = EMPTY_CACHE_RETRY_INTERVAL if not _cache else ON_DEMAND_MIN_INTERVAL
+        if _last_on_demand > 0 and now - _last_on_demand < min_interval:
             return
         _last_on_demand = now
         _refresh_task = asyncio.create_task(cache_loop())

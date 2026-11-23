@@ -93,6 +93,8 @@ async def lifespan(app: FastAPI):
     ]
 
     app.state.bg_tasks = [asyncio.create_task(task()) for task in tasks]
+    if CAN_CACHE:
+        app.state.bg_tasks.append(asyncio.create_task(cache.warmup()))
     app.state.bg_tasks.append(asyncio.create_task(addresses.ensure_addresses_loaded()))
 
     yield
@@ -277,7 +279,7 @@ async def grpc_get_status(req: Request):
 
     queue_code = subcription.queue_code_from_input(queue)
     stats_tracker.record_graph_request(queue_code)
-    statuses = await notifier.parse_status_for_queue(queue_code)
+    statuses = await notifier.parse_status_for_queue(queue_code) or []
     payload = _grpc_status_payload(statuses)
 
     return Response(

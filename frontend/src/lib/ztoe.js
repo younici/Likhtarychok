@@ -46,13 +46,16 @@ function decodeHtml(buffer, encoding) {
   }
 }
 
-async function fetchZtoeHtml() {
+async function fetchZtoeHtml(timeoutMs = 10000) {
   let lastError = null;
 
   for (const proxy of corsProxies) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(proxy.url(`${ZTOE_URL}?t=${Date.now()}`), {
         headers: { Accept: "text/html", ...proxy.headers },
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error(`Проксі відповів ${response.status}`);
 
@@ -61,6 +64,8 @@ async function fetchZtoeHtml() {
       throw new Error("Неочікуваний вміст сторінки");
     } catch (error) {
       lastError = error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

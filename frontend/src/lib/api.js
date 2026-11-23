@@ -105,24 +105,32 @@ export function decodeStatusResponse(messageBytes) {
   return result;
 }
 
-export async function fetchStatusGrpc(queue) {
+export async function fetchStatusGrpc(queue, timeoutMs = 12000) {
   const message = encodeStatusRequest(queue ?? '');
   const payload = wrapGrpcWebMessage(message);
 
-  const response = await fetch(grpcStatusEndpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/grpc-web+proto',
-      'X-Grpc-Web': '1',
-    },
-    body: payload,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) throw new Error(`gRPC request failed (${response.status})`);
+  try {
+    const response = await fetch(grpcStatusEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/grpc-web+proto',
+        'X-Grpc-Web': '1',
+      },
+      body: payload,
+      signal: controller.signal,
+    });
 
-  const buffer = await response.arrayBuffer();
-  const messageBytes = unwrapGrpcWebMessage(buffer);
-  return decodeStatusResponse(messageBytes);
+    if (!response.ok) throw new Error(`gRPC request failed (${response.status})`);
+
+    const buffer = await response.arrayBuffer();
+    const messageBytes = unwrapGrpcWebMessage(buffer);
+    return decodeStatusResponse(messageBytes);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /*

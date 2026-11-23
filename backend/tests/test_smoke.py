@@ -248,3 +248,40 @@ def test_redis_cache_and_ztoe_fallback_lifecycle(monkeypatch):
     assert ztoe_called["count"] == 2
 
 
+def test_status_rest_and_grpc_endpoints(monkeypatch):
+    import asyncio
+    from proto import status_pb2
+    from untils import cache, tools
+
+    today = tools.today_str()
+    sample_slots = [1 if i % 4 == 0 else 0 for i in range(48)]
+
+    async def fake_schedule():
+        return {"date": today, "queues": {11: sample_slots, 12: [0] * 48}}
+
+    monkeypatch.setattr(cache.tools, "get_schedule", fake_schedule)
+    monkeypatch.setattr(cache, "_cache", None)
+    monkeypatch.setattr(cache, "_refresh_task", None)
+    monkeypatch.setattr(cache, "_last_on_demand", 0.0)
+    monkeypatch.setattr(cache, "_first_boot", False)
+    monkeypatch.setattr(cache, "_lock", asyncio.Lock())
+
+    resp = client.get("/api/status?queue=11")
+    assert resp.status_code == 200
+    assert resp.json() == {"Status": sample_slots}
+
+    req_bytes = status_pb2.StatusRequest(queue="11").SerializeToString()
+    frame = b"\x00" + len(req_bytes).to_bytes(4, "big") + req_bytes
+    grpc_resp = client.post(
+        "/api/grpc/StatusService/GetStatus",
+        content=frame,
+        headers={"Content-Type": "application/grpc-web+proto"},
+    )
+    assert grpc_resp.status_code == 200
+    msg_len = int.from_bytes(grpc_resp.content[1:5], "big")
+    parsed = status_pb2.StatusResponse()
+    parsed.ParseFromString(grpc_resp.content[5 : 5 + msg_len])
+    assert list(parsed.status) == sample_slots
+
+
+
