@@ -106,6 +106,39 @@ export default function AdmStats() {
   const graphRanking = graphRequests.ranking || [];
   const pushHistory = pushes.history || [];
 
+  const pushesAllTime = useMemo(() => {
+    const raw = stats?.pushes_all_time;
+    if (raw && typeof raw === "object") {
+      return {
+        total: raw.total ?? 0,
+        web: raw.web ?? 0,
+        tg: raw.tg ?? 0,
+        events_count: raw.events_count ?? 0,
+      };
+    }
+
+    const ranking = stats?.pushes_ranking || [];
+    if (ranking.length > 0) {
+      return ranking.reduce(
+        (acc, item) => ({
+          total: acc.total + (item.total_sent || 0),
+          web: acc.web + (item.web_sent || 0),
+          tg: acc.tg + (item.tg_sent || 0),
+          events_count: acc.events_count + (item.events_count || 0),
+        }),
+        { total: 0, web: 0, tg: 0, events_count: 0 }
+      );
+    }
+
+    const p24 = stats?.pushes_24h || {};
+    return {
+      total: p24.total_24h ?? 0,
+      web: p24.web_24h ?? 0,
+      tg: p24.tg_24h ?? 0,
+      events_count: p24.events_count_24h ?? 0,
+    };
+  }, [stats]);
+
   // Calculate highest queue subscribers for chart scale
   const maxQueueSubscribers = useMemo(() => {
     const counts = Object.values(queueDist).map((q) => q.total || 0);
@@ -259,7 +292,28 @@ export default function AdmStats() {
           </div>
         </div>
 
-        {/* Metric 2: Pushes 24h */}
+        {/* Metric 2: Pushes all time */}
+        <div className={styles.metricCard}>
+          <div className={styles.metricCardHeader}>
+            <span className={styles.metricLabel}>Сповіщень за весь час</span>
+            <div className={styles.metricIcon} style={{ color: "var(--accent)" }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </div>
+          </div>
+          <div className={styles.bigValue}>{pushesAllTime.total}</div>
+          <div className={styles.badgeRow}>
+            <span className={`${styles.badge} ${styles.badgeWarning}`}>Web: {pushesAllTime.web}</span>
+            <span className={`${styles.badge} ${styles.badgeSuccess}`}>Telegram: {pushesAllTime.tg}</span>
+          </div>
+          <div className={styles.subText}>
+            Розсилок (подій): {pushesAllTime.events_count} за весь час
+          </div>
+        </div>
+
+        {/* Metric 3: Pushes 24h */}
         <div className={styles.metricCard}>
           <div className={styles.metricCardHeader}>
             <span className={styles.metricLabel}>Пушів за 24 години</span>
@@ -280,10 +334,10 @@ export default function AdmStats() {
           </div>
         </div>
 
-        {/* Metric 3: Graph views / requests */}
+        {/* Metric 4: Graph views / requests all time */}
         <div className={styles.metricCard}>
           <div className={styles.metricCardHeader}>
-            <span className={styles.metricLabel}>Запити графіків</span>
+            <span className={styles.metricLabel}>Отримання графіків (за весь час)</span>
             <div className={styles.metricIcon} style={{ color: "var(--accent-secondary)" }}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
@@ -292,17 +346,18 @@ export default function AdmStats() {
           </div>
           <div className={styles.bigValue}>{graphRequests.total_requests ?? 0}</div>
           <div className={styles.badgeRow}>
-            <span className={`${styles.badge} ${styles.badgeSuccess}`}>24г: {graphRequests.requests_24h ?? 0}</span>
+            <span className={`${styles.badge} ${styles.badgeSuccess}`}>Сьогодні: {graphRequests.today_requests ?? 0}</span>
+            <span className={styles.badge}>24г: {graphRequests.requests_24h ?? 0}</span>
             {graphRanking[0] && (
               <span className={styles.badge}>Топ: Черга {graphRanking[0].label}</span>
             )}
           </div>
           <div className={styles.subText}>
-            Переглядів через сайт та API
+            За весь час через сайт та API
           </div>
         </div>
 
-        {/* Metric 4: Database & Redis */}
+        {/* Metric 5: Database & Redis */}
         <div className={styles.metricCard}>
           <div className={styles.metricCardHeader}>
             <span className={styles.metricLabel}>База даних &amp; Кеш</span>
@@ -469,7 +524,9 @@ export default function AdmStats() {
             Рейтинг черг за надісланими пушами
           </div>
           <span className={styles.metaText}>
-            Скільки сповіщень доставлено по кожній черзі
+            <span>
+              За весь час: <strong>{pushesAllTime.total}</strong> (Web: {pushesAllTime.web} • TG: {pushesAllTime.tg})
+            </span>
           </span>
         </div>
 
@@ -536,10 +593,12 @@ export default function AdmStats() {
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
             </svg>
-            Запити графіків &amp; Топ переглядів
+            Отримання графіків за весь час &amp; Топ переглядів
           </div>
           <span className={styles.metaText}>
-            Всього переглядів: <strong>{graphRequests.total_requests ?? 0}</strong> • За добу: <strong>{graphRequests.requests_24h ?? 0}</strong>
+            <span>За весь час: <strong>{graphRequests.total_requests ?? 0}</strong></span>
+            <span>• Сьогодні: <strong>{graphRequests.today_requests ?? 0}</strong></span>
+            <span>• За 24г: <strong>{graphRequests.requests_24h ?? 0}</strong></span>
           </span>
         </div>
 
@@ -549,8 +608,8 @@ export default function AdmStats() {
               <tr>
                 <th style={{ width: "60px" }}>Місце</th>
                 <th>Черга графіка</th>
-                <th>Запитів сьогодні/24г</th>
-                <th>Всього запитів</th>
+                <th>Запитів сьогодні</th>
+                <th>Отримано за весь час</th>
                 <th>Частка запитів</th>
               </tr>
             </thead>

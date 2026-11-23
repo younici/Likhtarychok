@@ -261,6 +261,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   margin-bottom: 0.75rem;
 }
 
@@ -275,6 +276,7 @@
 .metricIcon {
   width: 32px;
   height: 32px;
+  flex-shrink: 0;
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -600,13 +602,28 @@
   }
 }
 
+@media (min-width: 600px) and (max-width: 899px) {
+  .metricCard:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (min-width: 900px) {
   .container {
     padding: 1.5rem 1rem 4rem;
   }
 
   .metricsGrid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(6, 1fr);
+  }
+
+  .metricCard {
+    grid-column: span 2;
+  }
+
+  .metricCard:nth-child(4),
+  .metricCard:nth-child(5) {
+    grid-column: span 3;
   }
 
   .section {

@@ -86,6 +86,10 @@ async def lifespan(app: FastAPI):
         redis_client = await redis_un.init_redis()
         subcription.set_redis_client(redis_client)
         await subcription.load_subscriptions_from_storage()
+        try:
+            await stats_tracker.sync_stats_from_redis()
+        except Exception as exc:
+            log.warning(f"sync_stats_from_redis() failed: {exc}")
 
     tasks = [
         notify_bot.start_bot,

@@ -284,4 +284,259 @@ def test_status_rest_and_grpc_endpoints(monkeypatch):
     assert list(parsed.status) == sample_slots
 
 
+def test_admin_stats_pushes_all_time(monkeypatch, tmp_path):
+    monkeypatch.setattr(stats_tracker, "STATS_DIR", str(tmp_path))
+    monkeypatch.setattr(stats_tracker, "PUSH_STATS_FILE", str(tmp_path / "push_stats.json"))
+    monkeypatch.setattr(stats_tracker, "GRAPH_STATS_FILE", str(tmp_path / "graph_stats.json"))
+    monkeypatch.setattr(stats_tracker, "_push_events", [])
+    monkeypatch.setattr(
+        stats_tracker,
+        "_push_all_time",
+        {"total": 0, "web": 0, "tg": 0, "events_count": 0},
+    )
+    monkeypatch.setattr(stats_tracker, "_push_by_queue_all_time", {})
+    monkeypatch.setattr(stats_tracker.redis_un, "get_redis_client", lambda: None)
+
+    stats_tracker.record_push_event(web_sent=4, tg_sent=6, title="Оновлення 1.1", queue=11)
+    stats_tracker.record_push_event(web_sent=2, tg_sent=3, title="Загальне сповіщення", queue=None)
+
+    resp = client.post("/api/admin/stats", json={"password": "my_notify_secret"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+
+    stats = data["stats"]
+    assert stats["pushes_all_time"] == {
+        "total": 15,
+        "web": 6,
+        "tg": 9,
+        "events_count": 2,
+    }
+    assert stats["pushes_24h"]["total_24h"] == 15
+    assert stats["pushes_24h"]["events_count_24h"] == 2
+
+    q11 = next(item for item in stats["pushes_ranking"] if item["label"] == "1.1")
+    assert q11["total_sent"] == 10
+    assert q11["web_sent"] == 4
+    assert q11["tg_sent"] == 6
+    assert q11["events_count"] == 1
+
+
+def test_sync_stats_from_redis_restores_after_restart(monkeypatch, tmp_path):
+    import asyncio
+    import json
+    import time
+    from datetime import datetime
+    from untils.variebles import QUEUE_LABELS
+
+    class FakeAsyncRedis:
+        def __init__(self):
+            self.kv: dict[str, str] = {}
+            self.hashes: dict[str, dict[str, str]] = {}
+            self.lists: dict[str, list[str]] = {}
+            self.ttls: dict[str, int] = {}
+
+        async def ping(self):
+            return True
+
+        async def dbsize(self):
+            return len(self.kv) + len(self.hashes) + len(self.lists)
+
+        async def get(self, key: str):
+            return self.kv.get(key)
+
+        async def set(self, key: str, value):
+            self.kv[key] = str(value)
+            return True
+
+        async def incr(self, key: str):
+            return await self.incrby(key, 1)
+
+        async def incrby(self, key: str, amount: int):
+            val = int(self.kv.get(key, 0)) + int(amount)
+            self.kv[key] = str(val)
+            return val
+
+        async def expire(self, key: str, seconds: int):
+            self.ttls[key] = int(seconds)
+            return True
+
+        async def hgetall(self, key: str):
+            return dict(self.hashes.get(key, {}))
+
+        async def hincrby(self, key: str, field: str, amount: int):
+            bucket = self.hashes.setdefault(key, {})
+            val = int(bucket.get(str(field), 0)) + int(amount)
+            bucket[str(field)] = str(val)
+            return val
+
+        async def hset(self, key: str, field: str, value):
+            bucket = self.hashes.setdefault(key, {})
+            bucket[str(field)] = str(value)
+            return 1
+
+        async def rpush(self, key: str, *values):
+            lst = self.lists.setdefault(key, [])
+            lst.extend(str(v) for v in values)
+            return len(lst)
+
+        async def ltrim(self, key: str, start: int, end: int):
+            lst = self.lists.get(key, [])
+            n = len(lst)
+            s = max(0, n + start) if start < 0 else start
+            e = (n + end) if end < 0 else end
+            self.lists[key] = lst[s : e + 1] if s <= e else []
+            return True
+
+        async def lrange(self, key: str, start: int, end: int):
+            lst = self.lists.get(key, [])
+            n = len(lst)
+            if n == 0:
+                return []
+            s = max(0, n + start) if start < 0 else start
+            e = (n + end) if end < 0 else end
+            if s > e or s >= n:
+                return []
+            return lst[s : e + 1]
+
+    monkeypatch.setattr(stats_tracker, "STATS_DIR", str(tmp_path))
+    monkeypatch.setattr(stats_tracker, "PUSH_STATS_FILE", str(tmp_path / "push_stats.json"))
+    monkeypatch.setattr(stats_tracker, "GRAPH_STATS_FILE", str(tmp_path / "graph_stats.json"))
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    now_ts = time.time()
+
+    fake_redis = FakeAsyncRedis()
+    fake_redis.kv["graph_requests:total"] = "250"
+    fake_redis.hashes["graph_requests:by_queue"] = {"11": "100", "22": "150"}
+    fake_redis.kv[f"graph_requests:daily:{today}:total"] = "30"
+    fake_redis.hashes[f"graph_requests:daily:{today}:by_queue"] = {"11": "12", "22": "18"}
+
+    fake_redis.kv["push_stats:total"] = "500"
+    fake_redis.kv["push_stats:web"] = "200"
+    fake_redis.kv["push_stats:tg"] = "300"
+    fake_redis.kv["push_stats:events"] = "40"
+    fake_redis.hashes["push_stats:by_queue:total"] = {"1.1": "320", "Всі": "180"}
+    fake_redis.hashes["push_stats:by_queue:web"] = {"1.1": "120", "Всі": "80"}
+    fake_redis.hashes["push_stats:by_queue:tg"] = {"1.1": "200", "Всі": "100"}
+    fake_redis.hashes["push_stats:by_queue:events"] = {"1.1": "25", "Всі": "15"}
+    fake_redis.hashes["push_stats:by_queue:last_sent"] = {
+        "1.1": "2026-11-23 12:00:00",
+        "Всі": "2026-11-23 10:00:00",
+    }
+
+    ev1 = {
+        "timestamp": now_ts - 120,
+        "datetime": "2026-11-23 11:58:00",
+        "web_sent": 10,
+        "tg_sent": 15,
+        "total_sent": 25,
+        "title": "Графік 1.1",
+        "queue": 11,
+        "queue_label": "1.1",
+    }
+    ev2 = {
+        "timestamp": now_ts - 60,
+        "datetime": "2026-11-23 11:59:00",
+        "web_sent": 5,
+        "tg_sent": 8,
+        "total_sent": 13,
+        "title": "Оголошення",
+        "queue": None,
+        "queue_label": "Всі",
+    }
+    fake_redis.lists["push_events_history"] = [
+        json.dumps(ev1, ensure_ascii=False),
+        json.dumps(ev2, ensure_ascii=False),
+    ]
+
+    # Simulate container restart (empty in-memory state except 1 overlapping event to test dedup)
+    monkeypatch.setattr(stats_tracker, "_push_events", [dict(ev1)])
+    monkeypatch.setattr(
+        stats_tracker,
+        "_push_all_time",
+        {"total": 0, "web": 0, "tg": 0, "events_count": 0},
+    )
+    monkeypatch.setattr(stats_tracker, "_push_by_queue_all_time", {})
+    monkeypatch.setattr(
+        stats_tracker,
+        "_graph_stats",
+        {
+            "total": 0,
+            "by_queue": {str(k): 0 for k in QUEUE_LABELS.keys()},
+            "daily": {},
+        },
+    )
+    monkeypatch.setattr(stats_tracker, "_graph_recent_timestamps", [])
+    monkeypatch.setattr(stats_tracker.redis_un, "get_redis_client", lambda: fake_redis)
+
+    ok = asyncio.run(stats_tracker.sync_stats_from_redis())
+    assert ok is True
+
+    # Graph stats restored from Redis
+    graph_stats = stats_tracker.get_graph_requests_stats()
+    assert graph_stats["total_requests"] == 250
+    assert graph_stats["today_requests"] == 30
+    assert graph_stats["by_queue"]["1.1"]["total_requests"] == 100
+    assert graph_stats["by_queue"]["1.1"]["today_requests"] == 12
+    assert graph_stats["by_queue"]["2.2"]["total_requests"] == 150
+    assert graph_stats["by_queue"]["2.2"]["today_requests"] == 18
+
+    # Push all-time stats restored from Redis
+    assert stats_tracker.get_all_time_push_stats() == {
+        "total": 500,
+        "web": 200,
+        "tg": 300,
+        "events_count": 40,
+    }
+
+    # Push history deduplicated (2 unique events, not 3)
+    assert len(stats_tracker._push_events) == 2
+
+    # Push ranking reflects restored all-time counts
+    ranking = stats_tracker.get_pushes_ranking()
+    q11 = next(item for item in ranking if item["label"] == "1.1")
+    assert q11["total_sent"] == 320
+    assert q11["web_sent"] == 120
+    assert q11["tg_sent"] == 200
+    assert q11["events_count"] == 25
+    assert q11["last_sent"] == "2026-11-23 12:00:00"
+
+    q_all = next(item for item in ranking if item["code"] == 0)
+    assert q_all["total_sent"] == 180
+
+    # End-to-end via /api/admin/stats endpoint
+    resp = client.post("/api/admin/stats", json={"password": "my_notify_secret"})
+    assert resp.status_code == 200
+    stats = resp.json()["stats"]
+    assert stats["pushes_all_time"]["total"] == 500
+    assert stats["graph_requests"]["total_requests"] == 250
+    assert stats["redis"]["status"] == "online"
+
+    # Legacy Redis migration: no push_stats:* keys yet, only push_events_history
+    legacy_redis = FakeAsyncRedis()
+    legacy_redis.lists["push_events_history"] = [
+        json.dumps(ev1, ensure_ascii=False),
+        json.dumps(ev2, ensure_ascii=False),
+    ]
+    monkeypatch.setattr(stats_tracker, "_push_events", [])
+    monkeypatch.setattr(
+        stats_tracker,
+        "_push_all_time",
+        {"total": 0, "web": 0, "tg": 0, "events_count": 0},
+    )
+    monkeypatch.setattr(stats_tracker, "_push_by_queue_all_time", {})
+    monkeypatch.setattr(stats_tracker.redis_un, "get_redis_client", lambda: legacy_redis)
+
+    assert asyncio.run(stats_tracker.sync_stats_from_redis()) is True
+    assert stats_tracker.get_all_time_push_stats() == {
+        "total": 38,
+        "web": 15,
+        "tg": 23,
+        "events_count": 2,
+    }
+    assert legacy_redis.kv["push_stats:total"] == "38"
+
+
+
 
